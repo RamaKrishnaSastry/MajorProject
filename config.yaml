@@ -1,0 +1,35 @@
+model:
+  backbone_weights: "pretrain_final.weights.h5"   # set to null to skip
+  freeze_backbone: true
+  input_shape: [512, 512, 3]
+
+optimizer:
+  type: "Adam"
+  learning_rate: 1.0e-4
+
+loss:
+  dr_output:
+    type: "mse"
+    weight: 0.0          # DR head masked during DME-only fine-tuning
+  dme_risk:
+    type: "categorical_crossentropy"
+    weight: 1.0
+    class_weights: "auto"  # computed from training data distribution
+
+training:
+  batch_size: 8
+  epochs: 30
+  augment: true
+  val_fraction: 0.20
+  seed: 42
+  early_stopping:
+    monitor: "val_qwk"
+    patience: 5
+    mode: "max"
+
+evaluation:
+  num_dme_classes: 3
+  class_names:
+    - "No DME (0)"
+    - "Mild DME (1)"
+    - "Moderate DME (2)"
