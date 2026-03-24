@@ -1,0 +1,44 @@
+# DR-ASPP-DRN Hyperparameter Configuration
+# -----------------------------------------
+# Edit values here and import with:
+#   import yaml
+#   cfg = yaml.safe_load(open("config.yaml"))
+
+# ---------- Dataset ----------
+dataset:
+  path: "dataset"                 # Root directory (must contain images/ and DME_Grades.csv)
+  val_fraction: 0.20              # 20% for validation
+  target_size: [512, 512]         # (H, W) fed to the model
+  augment: true                   # Random flips + brightness jitter on train set
+
+# ---------- Model ----------
+model:
+  backbone_weights: null          # Set to "pretrain_final.weights.h5" when available
+  aspp_out_channels: 256
+  aspp_rates: [6, 12, 18]
+  dme_head_units: 256
+  dme_dropout: 0.4
+
+# ---------- Training ----------
+training:
+  batch_size: 8
+  epochs: 30
+  learning_rate: 0.0001           # Adam learning rate
+  loss_weights:
+    dr_output: 0.0                # Frozen / dummy during DME fine-tuning
+    dme_risk: 1.0
+
+# ---------- Callbacks ----------
+callbacks:
+  early_stopping_patience: 5
+  reduce_lr_factor: 0.5
+  reduce_lr_patience: 3
+  min_lr: 1.0e-7
+
+# ---------- Output ----------
+output:
+  dir: "outputs"
+  best_weights: "dme_finetuned.weights.h5"
+  history_json: "training_history.json"
+  metrics_json: "evaluation_metrics.json"
+  log_file: "training_log.txt"
