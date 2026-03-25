@@ -1,0 +1,126 @@
+# config.yaml - Production configuration for DR+DME detection system
+#
+# Centralised hyperparameter management for all pipeline components.
+# Edit this file to customise training, evaluation, and data loading.
+#
+# Usage:
+#   python main_pipeline.py --config config.yaml
+#   python train_enhanced.py   (reads DEFAULT_ENHANCED_CONFIG, override via CLI)
+
+# ============================================================
+# GLOBAL SETTINGS
+# ============================================================
+seed: 42
+input_shape: [512, 512, 3]
+num_dme_classes: 4        # 0=No DME, 1=Mild, 2=Moderate, 3=Severe
+output_dir: pipeline_outputs
+checkpoint_dir: pipeline_outputs/checkpoints
+
+# ============================================================
+# DATA LOADING
+# ============================================================
+batch_size: 8
+val_split: 0.20
+augment_train: true
+use_advanced_loader: true   # Use QWK-aware stratified loader
+
+# Medical domain class weights
+medical_importance: true    # Severe/Moderate classes weighted higher
+ordinal_penalty: true       # Boundary classes weighted extra
+
+# Preprocessing parameters (CLAHE + cropping)
+border_fraction: 0.10
+clip_limit: 2.0
+grid_size: 8
+
+# ============================================================
+# STAGE 1: INITIAL TRAINING
+# ============================================================
+stage1:
+  epochs: 30
+  learning_rate: 1.0e-4
+  early_stopping_patience: 5
+  lr_reduce_patience: 3
+  lr_reduce_factor: 0.5
+  min_lr: 1.0e-7
+  ordinal_loss_weighting: true
+
+# ============================================================
+# STAGE 2: FINE-TUNING
+# ============================================================
+stage2:
+  epochs: 20
+  learning_rate: 5.0e-5    # Lower LR for fine-tuning
+  early_stopping_patience: 5
+  lr_reduce_patience: 3
+  lr_reduce_factor: 0.3
+  min_lr: 1.0e-8
+  ordinal_loss_weighting: true
+
+# ============================================================
+# MODEL ARCHITECTURE
+# ============================================================
+model:
+  backbone: resnet50
+  backbone_weights: imagenet
+  aspp_filters: 256
+  dr_head_units: 256
+  dme_head_units: 256
+  dropout_rate: 0.4
+
+# ============================================================
+# EVALUATION
+# ============================================================
+evaluation:
+  qwk_target: 0.80          # Main success criterion
+  output_visualisations: true
+  save_confusion_matrix: true
+  save_per_class_metrics: true
+  save_boundary_confusion: true
+
+# ============================================================
+# ABLATION STUDY
+# ============================================================
+ablation:
+  epochs_per_model: 5       # Quick experiments for ablation
+  n_bootstrap: 500          # Statistical significance resamples
+  output_dir: ablation_results
+
+# ============================================================
+# PRESET CONFIGURATIONS
+# Uncomment and modify as needed for different dataset sizes
+# ============================================================
+
+# --- SMALL PRESET (< 500 images, for testing) ---
+# batch_size: 4
+# stage1:
+#   epochs: 10
+#   learning_rate: 1.0e-4
+# stage2:
+#   epochs: 5
+#   learning_rate: 5.0e-5
+
+# --- MEDIUM PRESET (500–2000 images) ---
+# batch_size: 8
+# stage1:
+#   epochs: 30
+#   learning_rate: 1.0e-4
+# stage2:
+#   epochs: 15
+#   learning_rate: 5.0e-5
+
+# --- FULL PRESET (> 2000 images, IRDID full) ---
+# batch_size: 16
+# stage1:
+#   epochs: 50
+#   learning_rate: 1.0e-4
+# stage2:
+#   epochs: 30
+#   learning_rate: 2.0e-5
+
+# ============================================================
+# ENVIRONMENT / PATHS (override for your local setup)
+# ============================================================
+# data:
+#   csv_path: /path/to/DME_Grades.csv
+#   image_dir: /path/to/irdid/images
