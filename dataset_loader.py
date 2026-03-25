@@ -1,5 +1,5 @@
 """
-dataset_loader.py - IRDID dataset pipeline for DME classification.
+dataset_loader.py - IRDID dataset pipeline for multi-output DME+DR classification.
 
 Handles:
 - Loading DME_Grades.csv
@@ -7,6 +7,7 @@ Handles:
 - Creating tf.data pipeline with preprocessing
 - Computing class weights for imbalanced data
 - Train / validation split
+- Multi-output target formatting (DR regression + DME classification)
 """
 
 import os
@@ -201,13 +202,26 @@ def compute_dme_class_weights(labels: np.ndarray) -> Dict[int, float]:
     classes = np.unique(labels)
     weights = compute_class_weight("balanced", classes=classes, y=labels)
     class_weight_dict = dict(zip(classes.tolist(), weights.tolist()))
-    logger.info("Class weights: %s", class_weight_dict)
+    logger.info("Ordinal class weights: %s", class_weight_dict)
     return class_weight_dict
 
 
 # ---------------------------------------------------------------------------
 # tf.data pipeline builders
 # ---------------------------------------------------------------------------
+
+def _augment_image(image: tf.Tensor) -> tf.Tensor:
+    """Apply random augmentations to image only (not labels).
+    
+    Suitable for fundus images.
+    """
+    image = tf.image.random_flip_left_right(image)
+    image = tf.image.random_flip_up_down(image)
+    image = tf.image.random_brightness(image, max_delta=0.1)
+    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    image = tf.clip_by_value(image, 0.0, 1.0)
+    return image
+
 
 def _build_tf_dataset(
     image_paths: np.ndarray,
@@ -219,37 +233,50 @@ def _build_tf_dataset(
     cache: bool,
     seed: int,
 ) -> tf.data.Dataset:
-    """Internal helper – build a *tf.data.Dataset* from arrays."""
-    labels_oh = tf.keras.utils.to_categorical(labels, num_classes=NUM_DME_CLASSES)
-
-    ds = tf.data.Dataset.from_tensor_slices((image_paths, labels_oh))
-
+    """Internal helper – build a *tf.data.Dataset* from arrays.
+    
+    CRITICAL FIX: Returns targets as dict {'dr_output': ..., 'dme_risk': ...}
+    to match multi-output model structure (DR regression + DME classification).
+    """
+    # Convert DME labels to one-hot for classification
+    labels_dme_oh = tf.keras.utils.to_categorical(labels, num_classes=NUM_DME_CLASSES)
+    
+    # DR labels: use the same class label as regression (0.0-3.0)
+    labels_dr = labels.astype(np.float32).reshape(-1, 1)
+    
+    # Dataset with both DR and DME labels
+    ds = tf.data.Dataset.from_tensor_slices((image_paths, labels_dr, labels_dme_oh))
+    
     if shuffle:
         ds = ds.shuffle(buffer_size=len(image_paths), seed=seed, reshuffle_each_iteration=True)
-
+    
+    # Load image and create multi-output target dict
+    def load_and_format(path, dr_label, dme_label):
+        image = preprocess_fn(path)
+        # CRITICAL: Return targets as dict matching model outputs
+        targets = {
+            'dr_output': dr_label,      # Shape: (1,)
+            'dme_risk': dme_label,      # Shape: (4,) one-hot
+        }
+        return image, targets
+    
     ds = ds.map(
-        lambda path, label: (preprocess_fn(path), label),
+        load_and_format,
         num_parallel_calls=tf.data.AUTOTUNE,
     )
-
+    
     if augment:
-        ds = ds.map(_augment, num_parallel_calls=tf.data.AUTOTUNE)
-
+        # Augment only the image, not the labels
+        ds = ds.map(
+            lambda image, targets: (_augment_image(image), targets),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+    
     if cache:
         ds = ds.cache()
-
+    
     ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     return ds
-
-
-def _augment(image: tf.Tensor, label: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
-    """Apply random augmentations suitable for fundus images."""
-    image = tf.image.random_flip_left_right(image)
-    image = tf.image.random_flip_up_down(image)
-    image = tf.image.random_brightness(image, max_delta=0.1)
-    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-    image = tf.clip_by_value(image, 0.0, 1.0)
-    return image, label
 
 
 def build_datasets(
@@ -265,7 +292,7 @@ def build_datasets(
     clip_limit: float = 2.0,
     grid_size: int = 8,
 ) -> Tuple[tf.data.Dataset, tf.data.Dataset, Dict[int, float]]:
-    """Build train and validation *tf.data* datasets for DME classification.
+    """Build train and validation *tf.data* datasets for multi-output DR+DME model.
 
     Parameters
     ----------
@@ -296,6 +323,12 @@ def build_datasets(
     -------
     tuple
         ``(train_ds, val_ds, class_weights)``
+        
+    Notes
+    -----
+    Each batch returns:
+    - images: (batch_size, H, W, 3)
+    - targets: dict with keys 'dr_output' and 'dme_risk'
     """
     df = load_dme_csv(csv_path, image_dir)
 
@@ -312,6 +345,11 @@ def build_datasets(
     logger.info(
         "Split: %d train / %d val samples.", len(train_paths), len(val_paths)
     )
+    
+    # Log class distribution
+    train_dist = {c: int(np.sum(train_labels == c)) for c in range(NUM_DME_CLASSES)}
+    val_dist = {c: int(np.sum(val_labels == c)) for c in range(NUM_DME_CLASSES)}
+    logger.info("Train distribution: %s | Val distribution: %s", train_dist, val_dist)
 
     class_weights = compute_dme_class_weights(train_labels)
 

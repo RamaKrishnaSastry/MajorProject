@@ -68,7 +68,9 @@ def get_predictions(
     model : keras.Model
         Trained model.  Its output dict must contain the key ``"dme_risk"``.
     dataset : tf.data.Dataset
-        Batched dataset yielding ``(images, one_hot_labels)``.
+        Batched dataset yielding ``(images, labels)`` where labels can be:
+        - A tensor: (batch_size, num_classes) one-hot encoded
+        - A dict: {'dme_risk': tensor, 'dr_output': tensor, ...}
     num_dme_classes : int
         Number of DME classes.
 
@@ -85,7 +87,11 @@ def get_predictions(
     all_proba = []
 
     for batch_images, batch_labels in dataset:
+        # =====================================================
+        # Step 1: Extract DME predictions from model output
+        # =====================================================
         preds = model(batch_images, training=False)
+        
         # Handle both dict and tuple outputs
         if isinstance(preds, dict):
             dme_proba = preds["dme_risk"]
@@ -93,13 +99,31 @@ def get_predictions(
             dme_proba = preds[1]
         else:
             dme_proba = preds
-
-        all_true.append(np.argmax(batch_labels.numpy(), axis=-1))
+        
+        # =====================================================
+        # Step 2: Extract DME labels from batch_labels
+        # =====================================================
+        # Handle both tensor and dict inputs for labels
+        if isinstance(batch_labels, dict):
+            # Multi-output case: labels are in a dict
+            labels_tensor = batch_labels["dme_risk"]
+        else:
+            # Single-output case: labels are already a tensor
+            labels_tensor = batch_labels
+        
+        # =====================================================
+        # Step 3: Convert to numpy and get class indices
+        # =====================================================
+        all_true.append(np.argmax(labels_tensor.numpy(), axis=-1))
         all_proba.append(dme_proba.numpy())
 
+    # =====================================================
+    # Step 4: Concatenate all batches and compute predictions
+    # =====================================================
     y_true = np.concatenate(all_true)
     y_pred_proba = np.concatenate(all_proba)
     y_pred_class = np.argmax(y_pred_proba, axis=-1)
+    
     return y_true, y_pred_proba, y_pred_class
 
 

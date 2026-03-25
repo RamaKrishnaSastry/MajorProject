@@ -253,6 +253,7 @@ class QWKReduceLROnPlateau(keras.callbacks.Callback):
     verbose : int
         Verbosity level.
     """
+    """Reduce LR when val_qwk stops improving."""
 
     def __init__(
         self,
@@ -281,9 +282,11 @@ class QWKReduceLROnPlateau(keras.callbacks.Callback):
         else:
             self.wait += 1
             if self.wait >= self.patience:
-                old_lr = float(keras.backend.get_value(self.model.optimizer.learning_rate))
+                # FIX: Use direct assignment instead of keras.backend.set_value()
+                old_lr = float(self.model.optimizer.learning_rate)
                 new_lr = max(old_lr * self.factor, self.min_lr)
-                keras.backend.set_value(self.model.optimizer.learning_rate, new_lr)
+                self.model.optimizer.learning_rate = new_lr
+                
                 if self.verbose:
                     logger.info(
                         "QWKReduceLROnPlateau: reducing LR from %.2e to %.2e",
@@ -548,7 +551,7 @@ def train_enhanced(
         train_ds,
         validation_data=val_ds,
         epochs=cfg["epochs"],
-        class_weight=class_weights,
+        # class_weight=class_weights,
         callbacks=callbacks,
         verbose=1,
     )

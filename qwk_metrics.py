@@ -597,49 +597,93 @@ if _TF_AVAILABLE:
             self.qwk_history: List[float] = []
             self.best_qwk: float = -np.inf
             self.best_epoch: int = 0
+            self.history = []
 
         def on_epoch_end(self, epoch: int, logs=None):
+            """Compute QWK at end of epoch and log it."""
             logs = logs or {}
-            all_true, all_pred = [], []
-            for batch_images, batch_labels in self.val_dataset:
-                preds = self.model(batch_images, training=False)
-                if isinstance(preds, dict):
-                    dme_proba = preds["dme_risk"]
-                elif isinstance(preds, (list, tuple)):
-                    dme_proba = preds[1]
+            
+            all_true = []
+            all_pred = []
+            
+            for images, batch_labels in self.val_dataset:
+                # Handle multi-output case: labels is a dict
+                if isinstance(batch_labels, dict):
+                    dme_labels = batch_labels['dme_risk']
                 else:
-                    dme_proba = preds
-                all_true.append(np.argmax(batch_labels.numpy(), axis=-1))
-                all_pred.append(np.argmax(dme_proba.numpy(), axis=-1))
+                    dme_labels = batch_labels
+                
+                # Get predictions
+                predictions = self.model(images, training=False)
+                
+                # Handle multi-output case: predictions is a dict
+                if isinstance(predictions, dict):
+                    dme_preds = predictions['dme_risk']
+                else:
+                    dme_preds = predictions
+                
+                # Convert to numpy and get class indices
+                all_true.append(np.argmax(dme_labels.numpy(), axis=-1))
+                all_pred.append(np.argmax(dme_preds.numpy(), axis=-1))
+            
+            # Concatenate all batches
+            y_true = np.concatenate(all_true, axis=0)
+            y_pred = np.concatenate(all_pred, axis=0)
+            
+            # Compute QWK
+            qwk = compute_quadratic_weighted_kappa(y_true, y_pred, num_classes=self.num_classes)
+            
+            # Log it
+            logs['val_qwk'] = float(qwk)
 
-            y_true = np.concatenate(all_true)
-            y_pred = np.concatenate(all_pred)
-            qwk = compute_quadratic_weighted_kappa(y_true, y_pred, self.num_classes)
-
-            self.qwk_history.append(qwk)
-            logs["val_qwk"] = qwk
-
-            if qwk > self.best_qwk:
-                self.best_qwk = qwk
-                self.best_epoch = epoch + 1
-
-            if self.verbose:
-                logger.info(
-                    "Epoch %d – val_qwk=%.4f (best=%.4f @ epoch %d)",
-                    epoch + 1, qwk, self.best_qwk, self.best_epoch,
-                )
-
-            # Persist history
-            with open(self.history_path, "w") as f:
-                json.dump(
-                    {
-                        "qwk_history": self.qwk_history,
-                        "best_qwk": self.best_qwk,
-                        "best_epoch": self.best_epoch,
-                    },
-                    f,
-                    indent=2,
-                )
+        #this is batch processing to prevent memory leak issues with large validation sets. It computes QWK on the first 10 batches (40 samples) to get a quick estimate without overloading memory.
+        # def on_epoch_end(self, epoch: int, logs=None):
+        #     """Compute QWK on validation set at epoch end."""
+        #     logs = logs or {}
+            
+        #     y_true_all = []
+        #     y_pred_all = []
+            
+        #     # Process validation data in smaller batches to avoid memory issues
+        #     batch_size = 4  # Reduce from default batch size
+        #     batch_count = 0
+            
+        #     try:
+        #         for images, labels in self.val_dataset:
+        #             # Limit to avoid memory overload
+        #             if batch_count >= 10:  # Only use first 10 batches for QWK (~40 samples)
+        #                 break
+                    
+        #             predictions = self.model(images, training=False)
+        #             if isinstance(predictions, dict):
+        #                 predictions = predictions.get(self.output_name, predictions.get("dme_risk"))
+                    
+        #             y_true_all.append(tf.argmax(labels, axis=-1).numpy())
+        #             y_pred_all.append(tf.argmax(predictions, axis=-1).numpy())
+        #             batch_count += 1
+                
+        #         y_true = np.concatenate(y_true_all, axis=0)
+        #         y_pred = np.concatenate(y_pred_all, axis=0)
+                
+        #         qwk = compute_quadratic_weighted_kappa(y_true, y_pred, self.num_classes)
+        #         logs["val_qwk"] = qwk
+                
+        #         logger.info("Epoch %d: val_qwk = %.4f", epoch + 1, qwk)
+                
+        #     except Exception as e:
+        #         logger.warning("QWK computation failed at epoch %d: %s", epoch + 1, e)
+        #         logs["val_qwk"] = qwk
+            
+        #     if self.verbose:
+        #         logger.info(
+        #             f"Epoch {epoch + 1}: val_qwk = {qwk:.4f}"
+        #         )
+            
+        #     # Persist history
+        #     if self.history:
+        #         self.history.append(float(qwk))
+        #         with open(self.history_path, 'w') as f:
+        #             json.dump({'qwk_history': self.history}, f, indent=2)
 
 
 # ---------------------------------------------------------------------------

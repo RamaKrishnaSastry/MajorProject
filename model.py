@@ -245,27 +245,7 @@ def build_model_dme_tuning(
     num_dme_classes: int = 4,
     aspp_filters: int = 256,
 ) -> keras.Model:
-    """Build the DME fine-tuning model with only the DME head trainable.
-
-    All other components (backbone, ASPP, DR head) are frozen.
-
-    Parameters
-    ----------
-    input_shape : tuple
-        Model input shape ``(H, W, C)``.
-    pretrained_weights : str, optional
-        Path to pre-trained ``.weights.h5`` file (e.g., backbone pretrain).
-        Uses ``skip_mismatch=True`` so that a mismatched DME head is ignored.
-    num_dme_classes : int
-        Number of DME output classes.
-    aspp_filters : int
-        Number of filters in each ASPP branch.
-
-    Returns
-    -------
-    keras.Model
-        Keras model with only the DME head layers set to trainable.
-    """
+    """Build the DME fine-tuning model with only the DME head trainable."""
     model = build_model(
         input_shape=input_shape,
         backbone_weights="imagenet",
@@ -288,6 +268,15 @@ def build_model_dme_tuning(
 
     trainable_layers = [l.name for l in model.layers if l.trainable]
     logger.info("Trainable layers: %s", trainable_layers)
+    
+    # CRITICAL: Force Keras to recognize the trainable layers
+    # by triggering a model.build() with a dummy batch
+    try:
+        dummy_input = tf.zeros((1, *input_shape))
+        _ = model(dummy_input, training=False)
+        logger.info("Model built successfully. Trainable weights: %d", len(model.trainable_weights))
+    except Exception as e:
+        logger.warning("Could not build model with dummy input: %s", e)
 
     return model
 
