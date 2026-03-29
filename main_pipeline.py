@@ -205,6 +205,7 @@ def stage_training(
     config: Dict,
     stage_name: str = "stage1",
     pretrained_weights: Optional[str] = None,
+    eyepacs_backbone: Optional[str] = None,
 ) -> tuple:
     """Stage 1 / Stage 2: Training.
 
@@ -222,6 +223,8 @@ def stage_training(
         Stage key in config (``"stage1"`` or ``"stage2"``).
     pretrained_weights : str, optional
         Pre-trained weights path.
+    eyepacs_backbone : str, optional
+        Path to EyePACS backbone weights saved by preprocessing.ipynb.
 
     Returns
     -------
@@ -263,6 +266,7 @@ def stage_training(
         val_ds=val_ds,
         class_weights=class_weights,
         pretrained_weights=pretrained_weights,
+        eyepacs_backbone=eyepacs_backbone,
         config=train_config,
         output_weights=output_weights,
     )
@@ -370,6 +374,7 @@ def run_pipeline(
     config: Optional[Dict] = None,
     config_path: Optional[str] = None,
     two_stage: bool = True,
+    eyepacs_backbone: Optional[str] = None,
 ) -> Dict:
     """Run the full multi-stage training and evaluation pipeline.
 
@@ -385,6 +390,10 @@ def run_pipeline(
         Path to config.yaml.
     two_stage : bool
         If True, run both stage1 (initial) and stage2 (fine-tuning).
+    eyepacs_backbone : str, optional
+        Path to EyePACS backbone weights file saved by preprocessing.ipynb.
+        When provided, stage 1 uses EyePACS-pretrained weights instead of
+        ImageNet, enabling transfer learning benchmarks.
 
     Returns
     -------
@@ -413,8 +422,11 @@ def run_pipeline(
 
     # Stage 1: Initial training
     logger.info("\n" + "=" * 60 + "\nSTAGE 1: Initial Training\n" + "=" * 60)
+    if eyepacs_backbone is not None:
+        logger.info("Using EyePACS backbone weights: '%s'", eyepacs_backbone)
     model, history1, weights1 = stage_training(
-        train_ds, val_ds, class_weights, cfg, stage_name="stage1"
+        train_ds, val_ds, class_weights, cfg, stage_name="stage1",
+        eyepacs_backbone=eyepacs_backbone,
     )
     metrics1 = stage_evaluation(model, val_ds, cfg, stage_name="stage1")
     all_metrics["stage1"] = metrics1
@@ -459,11 +471,15 @@ def main():
     parser.add_argument("--mock", action="store_true")
     parser.add_argument("--single-stage", action="store_true",
                         help="Run only stage 1 (no fine-tuning)")
+    parser.add_argument("--use-eyepacs", type=str, default=None, metavar="WEIGHTS_PATH",
+                        help="Path to EyePACS backbone weights (.weights.h5) saved by "
+                             "preprocessing.ipynb. When provided, stage 1 uses EyePACS "
+                             "transfer learning instead of ImageNet.")
     args = parser.parse_args()
 
     if args.mock or args.csv is None:
         from dataset_loader import create_mock_dataset
-        csv_path, image_dir = create_mock_dataset("/tmp/mock_irdid_pipeline", num_samples=80)
+        csv_path, image_dir = create_mock_dataset("/tmp/mock_irdid_pipeline", num_samples=200)
         logger.info("Using mock dataset.")
     else:
         csv_path, image_dir = args.csv, args.image_dir
@@ -484,6 +500,7 @@ def main():
         image_dir=image_dir,
         config=cfg,
         two_stage=not args.single_stage,
+        eyepacs_backbone=args.use_eyepacs,
     )
 
     print("\nPipeline Report:")
