@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import shutil
+import tempfile
 
 import pandas as pd
 
@@ -9,7 +10,7 @@ from dataset_loader import create_mock_dataset
 
 
 def main() -> None:
-    out_dir = Path("/tmp/test_mock_dataset_balance")
+    out_dir = Path(tempfile.gettempdir()) / "test_mock_dataset_balance"
     if out_dir.exists():
         shutil.rmtree(out_dir)
 

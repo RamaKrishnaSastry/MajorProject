@@ -5,14 +5,16 @@ import tensorflow as tf
 
 from qwk_metrics import QWKCallback
 
+NUM_CLASSES = 4
+
 
 class _DummyMultiOutputModel:
     """Minimal model-like object returning [dr_output, dme_risk]."""
 
     def __call__(self, images, training=False):
         # Encode class index in the first pixel channel and reconstruct one-hot probs.
-        cls = tf.cast(tf.round(images[:, 0, 0, 0] * 3.0), tf.int32)
-        dme = tf.one_hot(cls, depth=4, dtype=tf.float32)
+        cls = tf.cast(tf.round(images[:, 0, 0, 0] * float(NUM_CLASSES - 1)), tf.int32)
+        dme = tf.one_hot(cls, depth=NUM_CLASSES, dtype=tf.float32)
         dr = tf.expand_dims(tf.cast(cls, tf.float32), axis=-1)
         return [dr, dme]
 
@@ -25,13 +27,13 @@ def main() -> None:
     images = np.zeros((len(y_true), 4, 4, 3), dtype=np.float32)
     images[:, 0, 0, 0] = y_true / 3.0
 
-    dme_one_hot = tf.one_hot(y_true, depth=4, dtype=tf.float32)
+    dme_one_hot = tf.one_hot(y_true, depth=NUM_CLASSES, dtype=tf.float32)
     dr_targets = tf.expand_dims(tf.cast(y_true, tf.float32), axis=-1)
     targets = {"dr_output": dr_targets, "dme_risk": dme_one_hot}
 
     val_ds = tf.data.Dataset.from_tensor_slices((images, targets)).batch(4)
 
-    cb = QWKCallback(val_dataset=val_ds, num_classes=4, verbose=0)
+    cb = QWKCallback(val_dataset=val_ds, num_classes=NUM_CLASSES, verbose=0)
     cb.set_model(_DummyMultiOutputModel())
     logs = {}
     cb.on_epoch_end(epoch=0, logs=logs)

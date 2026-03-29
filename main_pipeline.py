@@ -479,7 +479,7 @@ def main():
 
     if args.mock or args.csv is None:
         from dataset_loader import create_mock_dataset
-        csv_path, image_dir = create_mock_dataset("/tmp/mock_irdid_pipeline", num_samples=200)
+        csv_path, image_dir = create_mock_dataset("/tmp/mock_irdid_pipeline")
         logger.info("Using mock dataset.")
     else:
         csv_path, image_dir = args.csv, args.image_dir

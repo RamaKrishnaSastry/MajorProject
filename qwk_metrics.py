@@ -597,7 +597,8 @@ if _TF_AVAILABLE:
             self.qwk_history: List[float] = []
             self.best_qwk: float = -np.inf
             self.best_epoch: int = 0
-            self.history = []
+            # Backward-compatible alias used by older callback consumers.
+            self.history = self.qwk_history
 
         def on_epoch_end(self, epoch: int, logs=None):
             """Compute QWK at end of epoch and log it."""
@@ -647,10 +648,8 @@ if _TF_AVAILABLE:
             # Compute QWK
             qwk = compute_quadratic_weighted_kappa(y_true, y_pred, num_classes=self.num_classes)
 
-            # Persist history (qwk_history is the canonical list; history is an alias
-            # maintained for backward-compatible access via callback.history)
+            # Persist history (history is an alias of qwk_history).
             self.qwk_history.append(float(qwk))
-            self.history.append(float(qwk))
             if qwk > self.best_qwk:
                 self.best_qwk = qwk
                 self.best_epoch = epoch + 1
