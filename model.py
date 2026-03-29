@@ -44,11 +44,25 @@ def build_backbone(
     keras.Model
         ResNet50 model (without top classification layer).
     """
-    base = keras.applications.ResNet50(
-        include_top=False,
-        weights=weights,
-        input_shape=input_shape,
-    )
+    try:
+        base = keras.applications.ResNet50(
+            include_top=False,
+            weights=weights,
+            input_shape=input_shape,
+        )
+    except Exception as exc:
+        if weights == "imagenet":
+            logger.warning(
+                "Could not load ImageNet weights (%s). Falling back to random init.",
+                exc,
+            )
+            base = keras.applications.ResNet50(
+                include_top=False,
+                weights=None,
+                input_shape=input_shape,
+            )
+        else:
+            raise
     base.trainable = trainable
     logger.info(
         "✅ Backbone: ResNet50, trainable=%s, output shape=%s",

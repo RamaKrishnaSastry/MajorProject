@@ -601,7 +601,8 @@ if _TF_AVAILABLE:
 
         def on_epoch_end(self, epoch: int, logs=None):
             """Compute QWK at end of epoch and log it."""
-            logs = logs or {}
+            if logs is None:
+                logs = {}
 
             all_true = []
             all_pred = []
