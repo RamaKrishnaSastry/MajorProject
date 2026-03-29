@@ -595,8 +595,8 @@ if _TF_AVAILABLE:
             self.history_path = history_path
             self.verbose = verbose
             self.qwk_history: List[float] = []
-            self.best_qwk: float = -np.inf
-            self.best_epoch: int = 0
+            self.best_qwk: float = -1.0  # QWK minimum is -1
+            self.best_epoch: int = 1
             # Backward-compatible alias used by older callback consumers.
             self.history = self.qwk_history
 
@@ -657,9 +657,16 @@ if _TF_AVAILABLE:
             # Log it
             logs['val_qwk'] = float(qwk)
 
+            unique_pred = np.unique(y_pred)
+            class_dist = np.bincount(y_true, minlength=self.num_classes)
+
             if self.verbose:
-                logger.info("Epoch %d: val_qwk = %.4f (best=%.4f @ epoch %d)",
-                            epoch + 1, qwk, self.best_qwk, self.best_epoch)
+                logger.info(
+                    "Epoch %d: val_qwk=%.4f (best=%.4f @ epoch %d) | "
+                    "pred_classes=%s | class_dist=%s",
+                    epoch + 1, qwk, self.best_qwk, self.best_epoch,
+                    list(unique_pred), dict(enumerate(class_dist)),
+                )
 
         #this is batch processing to prevent memory leak issues with large validation sets. It computes QWK on the first 10 batches (40 samples) to get a quick estimate without overloading memory.
         # def on_epoch_end(self, epoch: int, logs=None):
