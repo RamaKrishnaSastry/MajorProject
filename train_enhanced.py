@@ -20,7 +20,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
-from model import build_model_dme_tuning
+from model import build_model, build_model_dme_tuning
 from qwk_metrics import (
     QWKCallback,
     compute_quadratic_weighted_kappa,
@@ -100,39 +100,64 @@ def build_ordinal_weight_matrix(num_classes: int = NUM_DME_CLASSES) -> np.ndarra
 
 
 class OrdinalWeightedCrossEntropy(keras.losses.Loss):
-    """Cross-entropy loss with ordinal penalty weights.
+    """Ordinal-aware weighted cross-entropy loss."""
 
-    Samples whose true class is far from the predicted class receive a larger
-    gradient signal, guiding the model to avoid large ordinal jumps.
-
-    Parameters
-    ----------
-    num_classes : int
-        Number of ordinal classes.
-    name : str
-        Loss name.
-    """
-
-    def __init__(self, num_classes: int = NUM_DME_CLASSES, name: str = "ordinal_ce"):
-        super().__init__(name=name)
+    def __init__(self, num_classes=4, class_weights=None, **kwargs):
+        super().__init__(**kwargs)
         self.num_classes = num_classes
-        w = build_ordinal_weight_matrix(num_classes)
-        self.weight_matrix = tf.constant(w, dtype=tf.float32)
+        
+        # Create ordinal weight matrix
+        self.ordinal_matrix = self._build_ordinal_matrix(num_classes)
+        
+        # Class weights (to handle imbalance)
+        if class_weights is not None:
+            # Convert to tensor: {0: 0.067, 1: 0.157, ...} → [0.067, 0.157, ...]
+            self.class_weights = tf.constant(
+                [class_weights.get(i, 1.0) for i in range(num_classes)],
+                dtype=tf.float32
+            )
+        else:
+            self.class_weights = tf.ones(num_classes, dtype=tf.float32)
 
-    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        # y_true: one-hot (batch, num_classes), y_pred: softmax proba (batch, num_classes)
-        y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
-        ce = -tf.reduce_sum(y_true * tf.math.log(y_pred), axis=-1)
+    def _build_ordinal_matrix(self, num_classes):
+        """Build ordinal weight matrix (penalize distant misclassifications)."""
+        matrix = []
+        for i in range(num_classes):
+            row = []
+            for j in range(num_classes):
+                weight = ((i - j) ** 2) / ((num_classes - 1) ** 2)
+                row.append(weight)
+            matrix.append(row)
+        return tf.constant(matrix, dtype=tf.float32)
 
-        # Ordinal penalty: weight by distance between true and predicted class
-        true_class = tf.argmax(y_true, axis=-1)
-        pred_class = tf.argmax(y_pred, axis=-1)
-        # Gather ordinal penalty for each sample
-        indices = tf.stack([true_class, pred_class], axis=1)
-        penalties = tf.gather_nd(self.weight_matrix, indices)
-
-        weighted_ce = ce * penalties
-        return tf.reduce_mean(weighted_ce)
+    def call(self, y_true, y_pred):
+        """Compute loss with ordinal + class weighting."""
+        # y_true: (batch, num_classes) one-hot encoded
+        # y_pred: (batch, num_classes) probabilities
+        
+        # Standard cross-entropy
+        ce_loss = keras.losses.categorical_crossentropy(y_true, y_pred)
+        
+        # Get true class indices
+        y_true_class = tf.argmax(y_true, axis=1)  # (batch,)
+        y_pred_class = tf.argmax(y_pred, axis=1)  # (batch,)
+        
+        # Apply ordinal weighting
+        ordinal_weights = tf.gather_nd(
+            self.ordinal_matrix,
+            tf.stack([y_true_class, y_pred_class], axis=1)
+        )  # (batch,)
+        
+        # Apply class weights
+        class_weights_per_sample = tf.gather(self.class_weights, y_true_class)  # (batch,)
+        
+        # Combine all weights
+        total_weights = ordinal_weights * class_weights_per_sample
+        
+        # Weighted loss
+        weighted_loss = ce_loss * total_weights
+        
+        return tf.reduce_mean(weighted_loss)
 
 
 # ---------------------------------------------------------------------------
@@ -378,14 +403,7 @@ class TrainingDiagnosticsCallback(keras.callbacks.Callback):
 # ---------------------------------------------------------------------------
 # Model compilation (enhanced)
 # ---------------------------------------------------------------------------
-
-def compile_model_enhanced(
-    model: keras.Model,
-    learning_rate: float = 1e-4,
-    num_dme_classes: int = NUM_DME_CLASSES,
-    ordinal_loss_weighting: bool = True,
-) -> keras.Model:
-    """Compile model with optionally ordinal-weighted loss.
+"""Compile model with optionally ordinal-weighted loss.
 
     Parameters
     ----------
@@ -403,11 +421,23 @@ def compile_model_enhanced(
     keras.Model
         Compiled model.
     """
+def compile_model_enhanced(
+    model: keras.Model,
+    learning_rate: float = 1e-4,
+    num_dme_classes: int = 4,
+    class_weights: Optional[Dict[int, float]] = None,
+    ordinal_loss_weighting: bool = True,
+) -> keras.Model:
+    """Compile with ordinal + class weighting baked into loss."""
+    
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
 
     if ordinal_loss_weighting:
-        dme_loss = OrdinalWeightedCrossEntropy(num_classes=num_dme_classes)
-        logger.info("Using ordinal-weighted cross-entropy loss.")
+        dme_loss = OrdinalWeightedCrossEntropy(
+            num_classes=num_dme_classes,
+            class_weights=class_weights,  # ← PASS CLASS WEIGHTS HERE
+        )
+        logger.info("Using ordinal-weighted cross-entropy loss with class balancing.")
     else:
         dme_loss = "categorical_crossentropy"
 
@@ -430,6 +460,40 @@ def compile_model_enhanced(
     logger.info("Enhanced model compiled (lr=%.2e).", learning_rate)
     return model
 
+# def compile_model_enhanced(
+#     model: keras.Model,
+#     learning_rate: float = 1e-4,
+#     num_dme_classes: int = 4,
+#     ordinal_loss_weighting: bool = True,
+# ) -> keras.Model:
+#     """Compile with class weights in loss."""
+    
+#     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+
+#     if ordinal_loss_weighting:
+#         dme_loss = OrdinalWeightedCrossEntropy(num_classes=num_dme_classes)
+#         logger.info("Using ordinal-weighted cross-entropy loss.")
+#     else:
+#         dme_loss = "categorical_crossentropy"
+
+#     model.compile(
+#         optimizer=optimizer,
+#         loss={
+#             "dr_output": "mse",
+#             "dme_risk": dme_loss,
+#         },
+#         loss_weights={
+#             "dr_output": 0.0,
+#             "dme_risk": 1.0,
+#         },
+#         metrics={
+#             "dme_risk": [
+#                 keras.metrics.CategoricalAccuracy(name="accuracy"),
+#             ],
+#         },
+#     )
+#     logger.info("Enhanced model compiled (lr=%.2e).", learning_rate)
+#     return model
 
 # ---------------------------------------------------------------------------
 # Callbacks builder
@@ -494,14 +558,6 @@ def build_enhanced_callbacks(
 # Main training entry point (enhanced)
 # ---------------------------------------------------------------------------
 
-def train_enhanced(
-    train_ds: tf.data.Dataset,
-    val_ds: tf.data.Dataset,
-    class_weights: Optional[Dict[int, float]] = None,
-    pretrained_weights: Optional[str] = None,
-    config: Optional[Dict] = None,
-    output_weights: str = "dme_enhanced.weights.h5",
-) -> Tuple[keras.Model, Dict]:
     """Run the enhanced DME training loop with QWK monitoring.
 
     Parameters
@@ -524,43 +580,69 @@ def train_enhanced(
     tuple
         ``(model, history_dict)``
     """
+
+def train_enhanced(
+    train_ds: tf.data.Dataset,
+    val_ds: tf.data.Dataset,
+    class_weights: Optional[Dict[int, float]] = None,
+    pretrained_weights: Optional[str] = None,
+    config: Optional[Dict] = None,
+    output_weights: str = "dme_enhanced.weights.h5",
+    use_dme_tuning: bool = False,
+) -> Tuple[keras.Model, Dict]:
+    """Run enhanced training with class weights."""
+    
     cfg = {**DEFAULT_ENHANCED_CONFIG, **(config or {})}
 
-    logger.info("Building enhanced DME fine-tuning model …")
-    model = build_model_dme_tuning(
-        input_shape=tuple(cfg["input_shape"]),
-        pretrained_weights=pretrained_weights,
-        num_dme_classes=cfg["num_dme_classes"],
-    )
+    logger.info("Building enhanced model …")
+    
+    if use_dme_tuning:
+        logger.info("Stage 2: DME head fine-tuning (backbone frozen)")
+        model = build_model_dme_tuning(
+            input_shape=tuple(cfg["input_shape"]),
+            pretrained_weights=pretrained_weights,
+            num_dme_classes=cfg["num_dme_classes"],
+        )
+    else:
+        logger.info("Stage 1: Full model training (all layers trainable)")
+        model = build_model(
+            input_shape=tuple(cfg["input_shape"]),
+            backbone_weights="imagenet",
+            num_dme_classes=cfg["num_dme_classes"],
+            trainable=True,
+        )
+        if pretrained_weights is not None:
+            model.load_weights(pretrained_weights, skip_mismatch=True)
 
+    # ✅ PASS CLASS WEIGHTS TO COMPILER
     model = compile_model_enhanced(
         model,
         learning_rate=cfg["learning_rate"],
         num_dme_classes=cfg["num_dme_classes"],
+        class_weights=class_weights,  # ← ADD THIS
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
     )
 
     callbacks = build_enhanced_callbacks(val_ds, cfg)
 
     logger.info(
-        "Starting enhanced training: epochs=%d, batch_size=%d",
-        cfg["epochs"], cfg["batch_size"],
+        "Starting training: epochs=%d, batch_size=%d, dme_tuning=%s",
+        cfg["epochs"], cfg["batch_size"], use_dme_tuning,
     )
 
+    # ✅ REMOVE class_weight from fit() - it's now in the loss
     history = model.fit(
         train_ds,
         validation_data=val_ds,
         epochs=cfg["epochs"],
-        # class_weight=class_weights,
         callbacks=callbacks,
         verbose=1,
     )
 
     model.save_weights(output_weights)
-    logger.info("Saved enhanced weights to '%s'.", output_weights)
+    logger.info("Saved weights to '%s'.", output_weights)
 
     return model, history.history
-
 
 # ---------------------------------------------------------------------------
 # CLI entry point

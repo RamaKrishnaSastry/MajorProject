@@ -51,7 +51,7 @@ def build_backbone(
     )
     base.trainable = trainable
     logger.info(
-        "Backbone: ResNet50, trainable=%s, output shape=%s",
+        "✅ Backbone: ResNet50, trainable=%s, output shape=%s",
         trainable,
         base.output_shape,
     )
@@ -86,54 +86,57 @@ def build_aspp(
     tf.Tensor
         Concatenated multi-scale features.
     """
-    # 1x1 conv
+    # 1x1 conv branch
     b0 = layers.Conv2D(filters, 1, padding="same", use_bias=False,
                        name=f"{name_prefix}_b0")(x)
     b0 = layers.BatchNormalization(name=f"{name_prefix}_b0_bn")(b0)
     b0 = layers.Activation("relu", name=f"{name_prefix}_b0_relu")(b0)
 
-    # 3x3 dilation 6
+    # 3x3 dilation rate 6
     b1 = layers.Conv2D(filters, 3, padding="same", dilation_rate=6, use_bias=False,
                        name=f"{name_prefix}_b1")(x)
     b1 = layers.BatchNormalization(name=f"{name_prefix}_b1_bn")(b1)
     b1 = layers.Activation("relu", name=f"{name_prefix}_b1_relu")(b1)
 
-    # 3x3 dilation 12
+    # 3x3 dilation rate 12
     b2 = layers.Conv2D(filters, 3, padding="same", dilation_rate=12, use_bias=False,
                        name=f"{name_prefix}_b2")(x)
     b2 = layers.BatchNormalization(name=f"{name_prefix}_b2_bn")(b2)
     b2 = layers.Activation("relu", name=f"{name_prefix}_b2_relu")(b2)
 
-    # 3x3 dilation 18
+    # 3x3 dilation rate 18
     b3 = layers.Conv2D(filters, 3, padding="same", dilation_rate=18, use_bias=False,
                        name=f"{name_prefix}_b3")(x)
     b3 = layers.BatchNormalization(name=f"{name_prefix}_b3_bn")(b3)
     b3 = layers.Activation("relu", name=f"{name_prefix}_b3_relu")(b3)
 
     # Global average pooling branch
-    gap_shape = tf.keras.backend.int_shape(x)[1:3]
     b4 = layers.GlobalAveragePooling2D(name=f"{name_prefix}_gap")(x)
-    b4 = layers.Reshape((1, 1, tf.keras.backend.int_shape(x)[-1]),
-                        name=f"{name_prefix}_gap_reshape")(b4)
+    b4 = layers.Reshape((1, 1, -1), name=f"{name_prefix}_gap_reshape")(b4)
     b4 = layers.Conv2D(filters, 1, use_bias=False, name=f"{name_prefix}_b4_conv")(b4)
     b4 = layers.BatchNormalization(name=f"{name_prefix}_b4_bn")(b4)
     b4 = layers.Activation("relu", name=f"{name_prefix}_b4_relu")(b4)
+    
+    # Dynamically resize to match input spatial dimensions
     b4 = layers.UpSampling2D(
-        size=gap_shape if gap_shape[0] is not None else (16, 16),
+        size=(16, 16),  # Assumes input is (512, 512) → backbone output (16, 16)
         interpolation="bilinear",
         name=f"{name_prefix}_b4_upsample",
     )(b4)
 
+    # Concatenate all branches
     out = layers.Concatenate(name=f"{name_prefix}_concat")([b0, b1, b2, b3, b4])
     out = layers.Conv2D(filters, 1, padding="same", use_bias=False,
                         name=f"{name_prefix}_proj")(out)
     out = layers.BatchNormalization(name=f"{name_prefix}_proj_bn")(out)
     out = layers.Activation("relu", name=f"{name_prefix}_proj_relu")(out)
+    
+    logger.debug("✅ ASPP output shape: %s", out.shape)
     return out
 
 
 # ---------------------------------------------------------------------------
-# DR head
+# DR head (Regression)
 # ---------------------------------------------------------------------------
 
 def build_dr_head(x: tf.Tensor) -> tf.Tensor:
@@ -149,7 +152,7 @@ def build_dr_head(x: tf.Tensor) -> tf.Tensor:
     Returns
     -------
     tf.Tensor
-        DR severity output tensor.
+        DR severity output tensor (1 value, sigmoid activation).
     """
     x = layers.GlobalAveragePooling2D(name="dr_gap")(x)
     x = layers.Dense(256, activation="relu", name="dr_fc1")(x)
@@ -159,7 +162,7 @@ def build_dr_head(x: tf.Tensor) -> tf.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# DME head
+# DME head (Classification)
 # ---------------------------------------------------------------------------
 
 def build_dme_head(x: tf.Tensor, num_classes: int = 4) -> tf.Tensor:
@@ -185,7 +188,7 @@ def build_dme_head(x: tf.Tensor, num_classes: int = 4) -> tf.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# Full multi-task model
+# Full multi-task model (STANDARD TRAINING)
 # ---------------------------------------------------------------------------
 
 def build_model(
@@ -193,6 +196,7 @@ def build_model(
     backbone_weights: str = "imagenet",
     num_dme_classes: int = 4,
     aspp_filters: int = 256,
+    trainable: bool = True,
 ) -> keras.Model:
     """Build the complete multi-task DR + DME model.
 
@@ -206,37 +210,58 @@ def build_model(
     backbone_weights : str
         Initial backbone weights (``"imagenet"`` or ``None``).
     num_dme_classes : int
-        Number of output classes for the DME head.
+        Number of output classes for the DME head (default: 4).
     aspp_filters : int
-        Number of filters in each ASPP branch.
+        Number of filters in each ASPP branch (default: 256).
+    trainable : bool
+        Whether all model weights should be trainable (default: True).
 
     Returns
     -------
     keras.Model
-        Compiled Keras functional model with two outputs:
-        ``dr_output`` and ``dme_risk``.
+        Functional model with two outputs: ``dr_output`` and ``dme_risk``.
     """
+    # Input layer
     inputs = keras.Input(shape=input_shape, name="input_image")
 
-    backbone = build_backbone(input_shape, weights=backbone_weights, trainable=True)
+    # Backbone (ResNet50 with optional pre-training)
+    backbone = build_backbone(
+        input_shape=input_shape,
+        weights=backbone_weights,
+        trainable=trainable,  # ✅ PROPAGATE trainable flag
+    )
     features = backbone(inputs)
+    logger.info("✅ Backbone: %d parameters", backbone.count_params())
 
+    # ASPP module
     aspp_out = build_aspp(features, filters=aspp_filters)
-
+    logger.info("✅ ASPP module added")
+    # DR head (regression)
     dr_out = build_dr_head(aspp_out)
+
+    # DME head (classification)
     dme_out = build_dme_head(aspp_out, num_classes=num_dme_classes)
 
+    # Build model
     model = keras.Model(
         inputs=inputs,
         outputs={"dr_output": dr_out, "dme_risk": dme_out},
         name="multitask_dr_dme",
     )
-    logger.info("Built multi-task model. Parameters: %d", model.count_params())
+
+    # Ensure all layers are marked properly
+    model.trainable = trainable
+
+    logger.info("✅ Built multi-task model:")
+    logger.info("   Total parameters: %d", model.count_params())
+    logger.info("   Trainable: %s", trainable)
+    logger.info("   Input shape: %s", input_shape)
+
     return model
 
 
 # ---------------------------------------------------------------------------
-# DME fine-tuning model (backbone / ASPP / DR head all frozen)
+# DME fine-tuning model (ONLY DME head trainable)
 # ---------------------------------------------------------------------------
 
 def build_model_dme_tuning(
@@ -245,51 +270,111 @@ def build_model_dme_tuning(
     num_dme_classes: int = 4,
     aspp_filters: int = 256,
 ) -> keras.Model:
-    """Build the DME fine-tuning model with only the DME head trainable."""
+    """Build the DME fine-tuning model with only DME head trainable.
+    
+    Backbone, ASPP, and DR head are frozen. Only DME head gets trained.
+
+    Parameters
+    ----------
+    input_shape : tuple
+        Model input shape ``(H, W, C)``.
+    pretrained_weights : str, optional
+        Path to pre-trained model weights to load.
+    num_dme_classes : int
+        Number of DME severity classes.
+    aspp_filters : int
+        Number of filters in ASPP.
+
+    Returns
+    -------
+    keras.Model
+        Model with only DME head trainable.
+    """
+    # Build full model with trainable backbone first
     model = build_model(
         input_shape=input_shape,
         backbone_weights="imagenet",
         num_dme_classes=num_dme_classes,
         aspp_filters=aspp_filters,
+        trainable=True,  # Start with all trainable
     )
 
+    # Load pre-trained weights if provided
     if pretrained_weights is not None:
         model.load_weights(pretrained_weights, skip_mismatch=True)
-        logger.info("Loaded pretrained weights from '%s'.", pretrained_weights)
+        logger.info("✅ Loaded pre-trained weights from '%s'", pretrained_weights)
 
-    # Freeze everything first
+    # ✅ FREEZE everything
     model.trainable = False
-
-    # Unfreeze only DME head layers
-    dme_layer_names = {"dme_gap", "dme_fc1", "dme_dropout", "dme_risk"}
     for layer in model.layers:
-        if layer.name in dme_layer_names:
-            layer.trainable = True
+        layer.trainable = False
 
-    trainable_layers = [l.name for l in model.layers if l.trainable]
-    logger.info("Trainable layers: %s", trainable_layers)
-    
-    # CRITICAL: Force Keras to recognize the trainable layers
-    # by triggering a model.build() with a dummy batch
-    try:
-        dummy_input = tf.zeros((1, *input_shape))
-        _ = model(dummy_input, training=False)
-        logger.info("Model built successfully. Trainable weights: %d", len(model.trainable_weights))
-    except Exception as e:
-        logger.warning("Could not build model with dummy input: %s", e)
+    # ✅ UNFREEZE only DME head layers
+    dme_layer_patterns = {"dme_gap", "dme_fc1", "dme_dropout", "dme_risk"}
+    for layer in model.layers:
+        if any(pattern in layer.name for pattern in dme_layer_patterns):
+            layer.trainable = True
+            logger.info("✅ Unfroze layer: %s", layer.name)
+
+    # Count trainable vs frozen
+    trainable_params = sum([tf.size(w).numpy() for w in model.trainable_weights])
+    total_params = model.count_params()
+    frozen_params = total_params - trainable_params
+
+    logger.info("✅ DME Fine-tuning Model:")
+    logger.info("   Total parameters: %d", total_params)
+    logger.info("   Trainable (DME head): %d", trainable_params)
+    logger.info("   Frozen (backbone+ASPP+DR): %d", frozen_params)
 
     return model
 
 
+# ---------------------------------------------------------------------------
+# Utility: Print trainability summary
+# ---------------------------------------------------------------------------
+
 def print_model_summary(model: keras.Model) -> None:
-    """Print a concise summary of trainable vs frozen layers."""
-    print(f"\n{'='*60}")
-    print(f"Model: {model.name}")
-    print(f"Total parameters: {model.count_params():,}")
-    print(f"{'='*60}")
-    print(f"{'Layer':<30} {'Trainable':<10} {'Output Shape'}")
-    print("-" * 60)
+    """Print a detailed summary of model trainability and layer info."""
+    print("\n" + "=" * 80)
+    print(f"MODEL: {model.name}")
+    print("=" * 80)
+    print(f"{'Layer':<35} {'Trainable':<12} {'Parameters':>15}")
+    print("-" * 80)
+    
+    total_params = 0
+    trainable_params = 0
+    
     for layer in model.layers:
-        shape = str(getattr(layer, "output_shape", "?"))
-        print(f"{layer.name:<30} {str(layer.trainable):<10} {shape}")
-    print("=" * 60)
+        params = layer.count_params()
+        total_params += params
+        if layer.trainable:
+            trainable_params += params
+            status = "✅ YES"
+        else:
+            status = "❌ NO"
+        
+        print(f"{layer.name:<35} {status:<12} {params:>15,}")
+    
+    print("=" * 80)
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable: {trainable_params:,}")
+    print(f"Frozen: {total_params - trainable_params:,}")
+    print("=" * 80 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Utility: Quick model check
+# ---------------------------------------------------------------------------
+
+def verify_model_trainability(model: keras.Model) -> bool:
+    """Verify that model has trainable weights."""
+    if not model.trainable_weights:
+        logger.error("❌ ERROR: Model has NO trainable weights!")
+        return False
+    
+    trainable_count = len(model.trainable_weights)
+    total_count = len(model.weights)
+    logger.info("✅ Model verification passed:")
+    logger.info("   Trainable weights: %d", trainable_count)
+    logger.info("   Total weights: %d", total_count)
+    return True

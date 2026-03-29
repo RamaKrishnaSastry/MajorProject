@@ -184,6 +184,9 @@ def stage_data_preparation(
             augment_train=config["augment_train"],
             seed=config["seed"],
         )
+
+        print(f"Class weights: {class_weights}")
+        
         split_info = {
             "seed": config["seed"],
             "val_split": config["val_split"],
