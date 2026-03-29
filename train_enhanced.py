@@ -120,12 +120,17 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
             self.class_weights = tf.ones(num_classes, dtype=tf.float32)
 
     def _build_ordinal_matrix(self, num_classes):
-        """Build ordinal weight matrix (penalize distant misclassifications)."""
+        """Build ordinal weight matrix (penalize distant misclassifications).
+
+        IMPORTANT: diagonal weights must be non-zero so correct predictions still
+        contribute cross-entropy gradients.
+        """
         matrix = []
         for i in range(num_classes):
             row = []
             for j in range(num_classes):
-                weight = ((i - j) ** 2) / ((num_classes - 1) ** 2)
+                distance = ((i - j) ** 2) / ((num_classes - 1) ** 2)
+                weight = 1.0 + distance
                 row.append(weight)
             matrix.append(row)
         return tf.constant(matrix, dtype=tf.float32)
