@@ -586,16 +586,17 @@ def train_enhanced(
     val_ds: tf.data.Dataset,
     class_weights: Optional[Dict[int, float]] = None,
     pretrained_weights: Optional[str] = None,
+    eyepacs_backbone: Optional[str] = None,
     config: Optional[Dict] = None,
     output_weights: str = "dme_enhanced.weights.h5",
     use_dme_tuning: bool = False,
 ) -> Tuple[keras.Model, Dict]:
     """Run enhanced training with class weights."""
-    
+
     cfg = {**DEFAULT_ENHANCED_CONFIG, **(config or {})}
 
     logger.info("Building enhanced model …")
-    
+
     if use_dme_tuning:
         logger.info("Stage 2: DME head fine-tuning (backbone frozen)")
         model = build_model_dme_tuning(
@@ -605,13 +606,22 @@ def train_enhanced(
         )
     else:
         logger.info("Stage 1: Full model training (all layers trainable)")
+        # Use EyePACS-pretrained backbone weights when provided, otherwise ImageNet
+        if eyepacs_backbone is not None:
+            backbone_weights = None  # Skip ImageNet; EyePACS weights loaded below
+            logger.info("EyePACS backbone weights will be loaded from '%s'.", eyepacs_backbone)
+        else:
+            backbone_weights = "imagenet"
         model = build_model(
             input_shape=tuple(cfg["input_shape"]),
-            backbone_weights="imagenet",
+            backbone_weights=backbone_weights,
             num_dme_classes=cfg["num_dme_classes"],
             trainable=True,
         )
-        if pretrained_weights is not None:
+        if eyepacs_backbone is not None:
+            model.load_weights(eyepacs_backbone, skip_mismatch=True)
+            logger.info("Loaded EyePACS backbone weights from '%s'.", eyepacs_backbone)
+        elif pretrained_weights is not None:
             model.load_weights(pretrained_weights, skip_mismatch=True)
 
     # ✅ PASS CLASS WEIGHTS TO COMPILER

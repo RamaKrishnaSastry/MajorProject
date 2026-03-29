@@ -126,9 +126,10 @@ def _resolve_image_path(image_dir: Path, name: str) -> Optional[Path]:
 
 def create_mock_dataset(
     output_dir: str,
-    num_samples: int = 80,
+    num_samples: int = 200,
     image_size: Tuple[int, int] = (512, 512),
     seed: int = 42,
+    balanced: bool = True,
 ) -> Tuple[str, str]:
     """Generate a small synthetic dataset for pipeline testing.
 
@@ -139,11 +140,16 @@ def create_mock_dataset(
     output_dir : str
         Directory where mock images and CSV will be saved.
     num_samples : int
-        Total number of synthetic images to create.
+        Total number of synthetic images to create. Defaults to 200 to provide
+        enough samples per class for stable train/val splits.
     image_size : tuple
         (H, W) pixel dimensions of each image.
     seed : int
         Random seed for reproducibility.
+    balanced : bool
+        If True (default), generate equal samples per class so that all four
+        DME grades are well-represented. If False, use a realistic imbalanced
+        distribution that mimics real IRDID proportions.
 
     Returns
     -------
@@ -157,9 +163,20 @@ def create_mock_dataset(
     image_dir = output_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
 
-    # Class distribution mimicking real IRDID imbalance
-    class_probs = [0.65, 0.18, 0.10, 0.07]
-    labels = rng.choice(NUM_DME_CLASSES, size=num_samples, p=class_probs)
+    if balanced:
+        # Equal samples per class: ensures all classes present in train AND val
+        samples_per_class = num_samples // NUM_DME_CLASSES
+        labels = np.repeat(np.arange(NUM_DME_CLASSES), samples_per_class)
+        # Handle remainder
+        remainder = num_samples - len(labels)
+        if remainder > 0:
+            extra = rng.integers(0, NUM_DME_CLASSES, size=remainder)
+            labels = np.concatenate([labels, extra])
+        rng.shuffle(labels)
+    else:
+        # Class distribution mimicking real IRDID imbalance
+        class_probs = [0.65, 0.18, 0.10, 0.07]
+        labels = rng.choice(NUM_DME_CLASSES, size=num_samples, p=class_probs)
 
     records = []
     for i, label in enumerate(labels):

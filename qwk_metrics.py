@@ -597,44 +597,69 @@ if _TF_AVAILABLE:
             self.qwk_history: List[float] = []
             self.best_qwk: float = -np.inf
             self.best_epoch: int = 0
-            self.history = []
+            # Backward-compatible alias used by older callback consumers.
+            self.history = self.qwk_history
 
         def on_epoch_end(self, epoch: int, logs=None):
             """Compute QWK at end of epoch and log it."""
-            logs = logs or {}
-            
+            if logs is None:
+                logs = {}
+
             all_true = []
             all_pred = []
-            
+
             for images, batch_labels in self.val_dataset:
                 # Handle multi-output case: labels is a dict
                 if isinstance(batch_labels, dict):
                     dme_labels = batch_labels['dme_risk']
                 else:
                     dme_labels = batch_labels
-                
-                # Get predictions
+
+                # Get predictions from multi-output model
                 predictions = self.model(images, training=False)
-                
-                # Handle multi-output case: predictions is a dict
+
+                # Handle multi-output predictions: dict, list, or single tensor
                 if isinstance(predictions, dict):
                     dme_preds = predictions['dme_risk']
+                elif isinstance(predictions, (list, tuple)):
+                    # Model returns [dr_output, dme_risk] – DME is second output
+                    dme_preds = predictions[1]
                 else:
                     dme_preds = predictions
-                
+
                 # Convert to numpy and get class indices
-                all_true.append(np.argmax(dme_labels.numpy(), axis=-1))
-                all_pred.append(np.argmax(dme_preds.numpy(), axis=-1))
-            
+                dme_labels_np = (
+                    dme_labels.numpy()
+                    if hasattr(dme_labels, 'numpy')
+                    else np.array(dme_labels)
+                )
+                dme_preds_np = (
+                    dme_preds.numpy()
+                    if hasattr(dme_preds, 'numpy')
+                    else np.array(dme_preds)
+                )
+                all_true.append(np.argmax(dme_labels_np, axis=-1))
+                all_pred.append(np.argmax(dme_preds_np, axis=-1))
+
             # Concatenate all batches
             y_true = np.concatenate(all_true, axis=0)
             y_pred = np.concatenate(all_pred, axis=0)
-            
+
             # Compute QWK
             qwk = compute_quadratic_weighted_kappa(y_true, y_pred, num_classes=self.num_classes)
-            
+
+            # Persist history (history is an alias of qwk_history).
+            self.qwk_history.append(float(qwk))
+            if qwk > self.best_qwk:
+                self.best_qwk = qwk
+                self.best_epoch = epoch + 1
+
             # Log it
             logs['val_qwk'] = float(qwk)
+
+            if self.verbose:
+                logger.info("Epoch %d: val_qwk = %.4f (best=%.4f @ epoch %d)",
+                            epoch + 1, qwk, self.best_qwk, self.best_epoch)
 
         #this is batch processing to prevent memory leak issues with large validation sets. It computes QWK on the first 10 batches (40 samples) to get a quick estimate without overloading memory.
         # def on_epoch_end(self, epoch: int, logs=None):
