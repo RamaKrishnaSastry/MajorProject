@@ -284,17 +284,16 @@ def _build_tf_dataset(
     Returns targets as dict {'dr_output': ..., 'dme_risk': ...} to match the
     multi-output model structure.
 
-    DR head  : regression (MSE).  Target = dr_label / 4.0  ∈ [0, 1], shape (1,).
-               Compatible with EyePACS-pretrained ``Dense(1, sigmoid)`` head.
-               At inference: ``round(prediction * 4)`` → DR grade 0-4.
+    DR head  : regression (MSE).  Target = dr_label ∈ [0, 4], shape (1,).
+               Compatible with EyePACS-pretrained ``Dense(1, relu)`` head.
     DME head : 3-class softmax (categorical crossentropy).
                Target = one-hot, shape (3,).
     """
     # Convert DME labels to one-hot for 3-class classification
     labels_dme_oh = tf.keras.utils.to_categorical(dme_labels, num_classes=NUM_DME_CLASSES)
 
-    # DR labels: normalise to [0, 1] for sigmoid regression (÷ 4 since max grade = 4)
-    labels_dr = (dr_labels.astype(np.float32) / float(NUM_DR_CLASSES - 1)).reshape(-1, 1)
+    # DR labels: keep native 0-4 grade scale for ReLU regression head
+    labels_dr = dr_labels.astype(np.float32).reshape(-1, 1)
 
     # Dataset with both DR and DME labels
     ds = tf.data.Dataset.from_tensor_slices((image_paths, labels_dr, labels_dme_oh))

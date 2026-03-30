@@ -15,8 +15,8 @@ class _DummyMultiOutputModel:
         # Encode DME class index in the first pixel channel and reconstruct one-hot probs.
         cls = tf.cast(tf.round(images[:, 0, 0, 0] * float(NUM_DME_CLASSES - 1)), tf.int32)
         dme = tf.one_hot(cls, depth=NUM_DME_CLASSES, dtype=tf.float32)
-        # DR head: regression scalar in [0, 1]
-        dr = tf.expand_dims(tf.cast(cls, tf.float32) / 4.0, axis=-1)
+        # DR head: regression scalar on 0-4 scale
+        dr = tf.expand_dims(tf.cast(cls, tf.float32), axis=-1)
         return [dr, dme]
 
 
@@ -29,7 +29,7 @@ def main() -> None:
     images[:, 0, 0, 0] = y_true / float(NUM_DME_CLASSES - 1)
 
     dme_one_hot = tf.one_hot(y_true, depth=NUM_DME_CLASSES, dtype=tf.float32)
-    dr_targets = tf.expand_dims(tf.cast(y_true, tf.float32) / 4.0, axis=-1)
+    dr_targets = tf.expand_dims(tf.cast(y_true, tf.float32), axis=-1)
     targets = {"dr_output": dr_targets, "dme_risk": dme_one_hot}
 
     val_ds = tf.data.Dataset.from_tensor_slices((images, targets)).batch(4)

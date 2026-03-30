@@ -41,8 +41,9 @@ def build_backbone(
 
     Returns
     -------
-    keras.Model
-        ResNet50 model (without top classification layer).
+        keras.Model
+        ResNet50 model truncated at ``conv4_block6_out`` to match the
+        EyePACS preprocessing/training architecture.
     """
     try:
         base = keras.applications.ResNet50(
@@ -64,12 +65,16 @@ def build_backbone(
         else:
             raise
     base.trainable = trainable
+    # EyePACS pretraining used the Block-3 endpoint (conv4_block6_out)
+    output = base.get_layer("conv4_block6_out").output
+    backbone = keras.Model(inputs=base.input, outputs=output, name="resnet50_conv4_backbone")
+    backbone.trainable = trainable
     logger.info(
-        "✅ Backbone: ResNet50, trainable=%s, output shape=%s",
+        "✅ Backbone: ResNet50@conv4_block6_out, trainable=%s, output shape=%s",
         trainable,
-        base.output_shape,
+        backbone.output_shape,
     )
-    return base
+    return backbone
 
 
 # ---------------------------------------------------------------------------
@@ -131,12 +136,11 @@ def build_aspp(
     b4 = layers.BatchNormalization(name=f"{name_prefix}_b4_bn")(b4)
     b4 = layers.Activation("relu", name=f"{name_prefix}_b4_relu")(b4)
     
-    # Dynamically resize to match input spatial dimensions
-    b4 = layers.UpSampling2D(
-        size=(16, 16),  # Assumes input is (512, 512) → backbone output (16, 16)
-        interpolation="bilinear",
-        name=f"{name_prefix}_b4_upsample",
-    )(b4)
+    # Dynamically resize GAP branch to match current feature-map spatial size
+    b4 = layers.Lambda(
+        lambda t: tf.image.resize(t[0], tf.shape(t[1])[1:3]),
+        name=f"{name_prefix}_b4_resize",
+    )([b4, x])
 
     # Concatenate all branches
     out = layers.Concatenate(name=f"{name_prefix}_concat")([b0, b1, b2, b3, b4])
@@ -156,8 +160,7 @@ def build_aspp(
 def build_dr_head(x: tf.Tensor) -> tf.Tensor:
     """Build the Diabetic Retinopathy (DR) regression head.
 
-    Outputs a single scalar in [0, 1] representing normalised DR severity.
-    Map to integer grade at inference with ``round(output * 4)`` → class 0-4.
+    Outputs a single non-negative scalar representing DR severity (0-4 scale).
 
     Keeping regression (not classification) preserves compatibility with
     EyePACS-pretrained backbone weights, which were trained with this head.
@@ -170,12 +173,12 @@ def build_dr_head(x: tf.Tensor) -> tf.Tensor:
     Returns
     -------
     tf.Tensor
-        DR severity output tensor (1 value, sigmoid activation).
+        DR severity output tensor (1 value, ReLU activation).
     """
     x = layers.GlobalAveragePooling2D(name="dr_gap")(x)
     x = layers.Dense(256, activation="relu", name="dr_fc1")(x)
     x = layers.Dropout(0.4, name="dr_dropout")(x)
-    x = layers.Dense(1, activation="sigmoid", name="dr_output")(x)
+    x = layers.Dense(1, activation="relu", name="dr_output")(x)
     return x
 
 
@@ -221,7 +224,7 @@ def build_model(
     Architecture:
     ``Input → Backbone (ResNet50) → ASPP → DR head + DME head``
 
-    DR head: regression (sigmoid → [0,1]; map to grade with ``round(out*4)``).
+    DR head: regression (ReLU, trained on 0-4 grade scale).
     DME head: 3-class softmax (0=No DME, 1=Mild, 2=Moderate).
 
     Parameters
