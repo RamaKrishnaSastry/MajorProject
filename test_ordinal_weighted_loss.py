@@ -38,10 +38,19 @@ def main() -> None:
     assert restored_cfg["class_weights"] == cfg["class_weights"], (
         f"Expected class_weights to round-trip, got {restored_cfg['class_weights']}"
     )
+
+    # Serialization should be robust to malformed/non-list class_weights.
+    malformed_cfg = dict(cfg)
+    malformed_cfg["class_weights"] = "not-a-list"
+    malformed_restored = OrdinalWeightedCrossEntropy.from_config(malformed_cfg)
+    malformed_restored_cfg = malformed_restored.get_config()
+    assert malformed_restored_cfg["class_weights"] == [1.0, 1.0, 1.0], (
+        "Malformed class_weights should safely fall back to default weights."
+    )
     print(
         "PASS: OrdinalWeightedCrossEntropy keeps non-zero diagonal weighting; "
         f"perfect_loss={perfect_loss:.6f}, bad_loss={bad_loss:.6f}, "
-        "serialization round-trip ok"
+        "serialization round-trip and malformed-config fallback ok"
     )
 
 

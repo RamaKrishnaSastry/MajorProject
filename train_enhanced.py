@@ -212,14 +212,15 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
     def get_config(self):
         config = super().get_config()
         class_weights_list = None
-        if hasattr(self, "class_weights"):
+        class_weights_tensor = getattr(self, "class_weights", None)
+        if isinstance(class_weights_tensor, (tf.Tensor, tf.Variable)):
             try:
-                class_weights_list = self.class_weights.numpy().tolist()
+                class_weights_list = class_weights_tensor.numpy().tolist()
             except (AttributeError, TypeError, ValueError):
                 class_weights_list = None
         config.update({
             "num_classes": self.num_classes,
-            "focal_loss_gamma": float(self.focal_loss_gamma),
+            "focal_loss_gamma": float(getattr(self, "focal_loss_gamma", 0.0)),
             "class_weights": class_weights_list,
         })
         return config
@@ -227,8 +228,13 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
     @classmethod
     def from_config(cls, config):
         class_weights = config.pop("class_weights", None)
-        if class_weights is not None:
-            class_weights = {i: w for i, w in enumerate(class_weights)}
+        if isinstance(class_weights, list):
+            try:
+                class_weights = {i: float(w) for i, w in enumerate(class_weights)}
+            except (TypeError, ValueError):
+                class_weights = None
+        elif not isinstance(class_weights, dict):
+            class_weights = None
         return cls(**config, class_weights=class_weights)
 
 
