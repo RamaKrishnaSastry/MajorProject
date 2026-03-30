@@ -48,6 +48,7 @@ python main_pipeline.py \
 ```
 
 See [QUICKSTART.md](QUICKSTART.md) for all runnable examples.
+See [USAGE_GUIDE.md](USAGE_GUIDE.md) for troubleshooting and detailed workflows.
 
 ---
 
@@ -57,7 +58,7 @@ The **DR-ASPP-DRN** architecture combines:
 - **ResNet50 backbone** (ImageNet pre-training)
 - **ASPP module** (multi-scale context with dilation rates 6, 12, 18)
 - **DR head** (regression, sigmoid output)
-- **DME head** (4-class ordinal classification, softmax output)
+- **DME head** (3-class ordinal classification, softmax output)
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design documentation.
 
@@ -127,7 +128,7 @@ img002, 2
 img003, 1
 ```
 
-Labels: `0=No DME`, `1=Mild`, `2=Moderate`, `3=Severe`
+Labels: `0=No DME`, `1=Mild`, `2=Moderate`
 
 ---
 

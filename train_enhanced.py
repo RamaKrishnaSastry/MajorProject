@@ -60,6 +60,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "qwk_history_path": "qwk_history.json",
     # Ordinal loss weight matrix: larger penalty for distant class misclassification
     "ordinal_loss_weighting": True,
+    "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
 }
 
@@ -166,6 +167,72 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         weighted_loss = ce_loss * total_weights
         
         return tf.reduce_mean(weighted_loss)
+
+
+def _extract_dme_labels(batch_labels):
+    """Extract DME labels from dataset batch labels (dict/tuple/tensor)."""
+    if isinstance(batch_labels, dict):
+        return batch_labels.get("dme_risk", batch_labels.get("dme_output"))
+    if isinstance(batch_labels, (tuple, list)):
+        return batch_labels[1] if len(batch_labels) > 1 else batch_labels[0]
+    return batch_labels
+
+
+def log_dataset_class_distribution(
+    dataset: tf.data.Dataset,
+    name: str,
+    num_classes: int = NUM_DME_CLASSES,
+    max_batches: int = 20,
+) -> None:
+    """Log approximate class distribution from the first N batches of a dataset."""
+    if num_classes <= 0:
+        logger.debug("%s class distribution skipped: invalid num_classes=%s", name, num_classes)
+        return
+
+    counts = np.zeros(num_classes, dtype=np.int64)
+    samples = 0
+
+    for batch_idx, batch_data in enumerate(dataset):
+        if max_batches is not None and batch_idx >= max_batches:
+            break
+        if not isinstance(batch_data, (tuple, list)) or len(batch_data) < 2:
+            continue
+
+        _, batch_labels = batch_data
+        dme_labels = _extract_dme_labels(batch_labels)
+
+        try:
+            arr = dme_labels.numpy()
+        except (AttributeError, TypeError):
+            arr = np.asarray(dme_labels)
+
+        if arr.ndim > 1:
+            # Expected format is one-hot encoded labels from dataset loaders.
+            # For debug logging, tolerate minor numeric noise but flag non one-hot rows.
+            row_sums = np.sum(arr, axis=-1)
+            mismatch = ~np.isclose(row_sums, 1.0, atol=1e-3)
+            if np.any(mismatch):
+                logger.debug(
+                    "%s labels appear non one-hot in sampled batch %d: mismatched_rows=%d/%d, row_sum_range=[%.4f, %.4f]",
+                    name, batch_idx, int(np.sum(mismatch)), int(row_sums.shape[0]),
+                    float(np.min(row_sums)), float(np.max(row_sums)),
+                )
+            classes = np.argmax(arr, axis=-1)
+        else:
+            classes = arr.astype(int).reshape(-1)
+        classes = np.clip(classes, 0, num_classes - 1)
+        counts += np.bincount(classes, minlength=num_classes)
+        samples += int(classes.shape[0])
+
+    if samples == 0:
+        logger.debug("%s class distribution unavailable (no samples read).", name)
+        return
+
+    fractions = {i: round((counts[i] / samples) * 100.0, 2) for i in range(num_classes)}
+    logger.debug(
+        "%s DME class distribution from first %d batches: counts=%s, pct=%s",
+        name, max_batches, counts.tolist(), fractions,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -443,9 +510,11 @@ def compile_model_enhanced(
     if ordinal_loss_weighting:
         dme_loss = OrdinalWeightedCrossEntropy(
             num_classes=num_dme_classes,
-            class_weights=class_weights,  # ← PASS CLASS WEIGHTS HERE
+            class_weights=class_weights,
         )
         logger.info("Using ordinal-weighted cross-entropy loss with class balancing.")
+        if class_weights:
+            logger.info("DME class weights applied in loss: %s", class_weights)
     else:
         dme_loss = "categorical_crossentropy"
 
@@ -535,6 +604,7 @@ def build_enhanced_callbacks(
             num_classes=config["num_dme_classes"],
             history_path=config["qwk_history_path"],
             verbose=1,
+            max_batches=config.get("max_batches", None),
         ),
         # Save best model by QWK
         QWKModelCheckpoint(filepath=best_qwk_path, verbose=1),
@@ -644,12 +714,11 @@ def train_enhanced(
         elif pretrained_weights is not None:
             model.load_weights(pretrained_weights, skip_mismatch=True)
 
-    # ✅ PASS CLASS WEIGHTS TO COMPILER
     model = compile_model_enhanced(
         model,
         learning_rate=cfg["learning_rate"],
         num_dme_classes=cfg["num_dme_classes"],
-        class_weights=class_weights,  # ← ADD THIS
+        class_weights=class_weights,
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
     )
 
@@ -659,8 +728,13 @@ def train_enhanced(
         "Starting training: epochs=%d, batch_size=%d, dme_tuning=%s",
         cfg["epochs"], cfg["batch_size"], use_dme_tuning,
     )
+    log_dataset_class_distribution(
+        train_ds, "Train", num_classes=cfg["num_dme_classes"], max_batches=20
+    )
+    log_dataset_class_distribution(
+        val_ds, "Val", num_classes=cfg["num_dme_classes"], max_batches=20
+    )
 
-    # ✅ REMOVE class_weight from fit() - it's now in the loss
     history = model.fit(
         train_ds,
         validation_data=val_ds,

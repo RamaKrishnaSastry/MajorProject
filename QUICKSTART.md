@@ -134,6 +134,12 @@ python main_pipeline.py \
   --output-dir /tmp/pipeline_test/
 ```
 
+Minimal runnable command:
+
+```bash
+python main_pipeline.py --mock --epochs 5
+```
+
 ---
 
 ## 9. Jupyter Notebook
@@ -200,4 +206,8 @@ stage1:
 stage2:
   epochs: 20
   learning_rate: 5.0e-5  # Always lower than stage1
+
+# QWKCallback behavior:
+max_batches: null        # null = full validation set (recommended)
+# max_batches: 10         # optional approximation for very large val sets
 ```
