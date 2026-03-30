@@ -566,6 +566,17 @@ def build_enhanced_callbacks(
 # Main training entry point (enhanced)
 # ---------------------------------------------------------------------------
 
+def train_enhanced(
+    train_ds: tf.data.Dataset,
+    val_ds: tf.data.Dataset,
+    class_weights: Optional[Dict[int, float]] = None,
+    pretrained_weights: Optional[str] = None,
+    eyepacs_backbone: Optional[str] = None,
+    backbone_weights_path: Optional[str] = None,
+    config: Optional[Dict] = None,
+    output_weights: str = "dme_enhanced.weights.h5",
+    use_dme_tuning: bool = False,
+) -> Tuple[keras.Model, Dict]:
     """Run the enhanced DME training loop with QWK monitoring.
 
     Parameters
@@ -577,29 +588,26 @@ def build_enhanced_callbacks(
     class_weights : dict, optional
         Per-class loss weights.
     pretrained_weights : str, optional
-        Path to pretrained backbone weights.
+        Path to pretrained full-model weights.
+    eyepacs_backbone : str, optional
+        Path to EyePACS backbone weights (Stage 1 only).
+    backbone_weights_path : str, optional
+        Path to a custom ``.h5`` backbone weights file.  When provided, these
+        weights are loaded into the backbone at construction time (Stage 1
+        and Stage 2 fine-tuning).  Ignored when ``eyepacs_backbone`` is set
+        (EyePACS weights take priority).
     config : dict, optional
         Training configuration. Defaults to :data:`DEFAULT_ENHANCED_CONFIG`.
     output_weights : str
         Path to save final weights.
+    use_dme_tuning : bool
+        When True, only the DME head is trainable (Stage 2).
 
     Returns
     -------
     tuple
         ``(model, history_dict)``
     """
-
-def train_enhanced(
-    train_ds: tf.data.Dataset,
-    val_ds: tf.data.Dataset,
-    class_weights: Optional[Dict[int, float]] = None,
-    pretrained_weights: Optional[str] = None,
-    eyepacs_backbone: Optional[str] = None,
-    config: Optional[Dict] = None,
-    output_weights: str = "dme_enhanced.weights.h5",
-    use_dme_tuning: bool = False,
-) -> Tuple[keras.Model, Dict]:
-    """Run enhanced training with class weights."""
 
     cfg = {**DEFAULT_ENHANCED_CONFIG, **(config or {})}
 
@@ -611,6 +619,7 @@ def train_enhanced(
             input_shape=tuple(cfg["input_shape"]),
             pretrained_weights=pretrained_weights,
             num_dme_classes=cfg["num_dme_classes"],
+            backbone_weights_path=backbone_weights_path,
         )
     else:
         logger.info("Stage 1: Full model training (all layers trainable)")
@@ -625,6 +634,9 @@ def train_enhanced(
             backbone_weights=backbone_weights,
             num_dme_classes=cfg["num_dme_classes"],
             trainable=True,
+            # EyePACS weights take priority; custom backbone path only used
+            # when no EyePACS weights are provided.
+            backbone_weights_path=None if eyepacs_backbone is not None else backbone_weights_path,
         )
         if eyepacs_backbone is not None:
             model.load_weights(eyepacs_backbone, skip_mismatch=True)
