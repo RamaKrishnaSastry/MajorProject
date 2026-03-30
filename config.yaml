@@ -50,6 +50,7 @@ stage1:
   lr_reduce_factor: 0.5
   min_lr: 1.0e-7
   ordinal_loss_weighting: true  # Recommended for class imbalance + ordinal errors
+  focal_loss_gamma: 2.0         # >0 applies focal loss (down-weights easy majority-class samples)
 
 # ============================================================
 # STAGE 2: FINE-TUNING
@@ -62,6 +63,7 @@ stage2:
   lr_reduce_factor: 0.3
   min_lr: 1.0e-8
   ordinal_loss_weighting: true  # Keep enabled for stable minority-class learning
+  focal_loss_gamma: 2.0         # Keep focal loss active during fine-tuning
 
 # ============================================================
 # MODEL ARCHITECTURE
