@@ -185,6 +185,10 @@ def log_dataset_class_distribution(
     max_batches: int = 20,
 ) -> None:
     """Log approximate class distribution from the first N batches of a dataset."""
+    if num_classes <= 0:
+        logger.debug("%s class distribution skipped: invalid num_classes=%s", name, num_classes)
+        return
+
     counts = np.zeros(num_classes, dtype=np.int64)
     samples = 0
 
@@ -202,8 +206,21 @@ def log_dataset_class_distribution(
         except (AttributeError, TypeError):
             arr = np.asarray(dme_labels)
 
-        classes = np.argmax(arr, axis=-1) if arr.ndim > 1 else arr.astype(int).reshape(-1)
-        classes = np.clip(classes, 0, max(num_classes - 1, 0))
+        if arr.ndim > 1:
+            # Expected format is one-hot encoded labels from dataset loaders.
+            # For debug logging, tolerate minor numeric noise but flag non one-hot rows.
+            row_sums = np.sum(arr, axis=-1)
+            mismatch = ~np.isclose(row_sums, 1.0, atol=1e-3)
+            if np.any(mismatch):
+                logger.debug(
+                    "%s labels appear non one-hot in sampled batch %d: mismatched_rows=%d/%d, row_sum_range=[%.4f, %.4f]",
+                    name, batch_idx, int(np.sum(mismatch)), int(row_sums.shape[0]),
+                    float(np.min(row_sums)), float(np.max(row_sums)),
+                )
+            classes = np.argmax(arr, axis=-1)
+        else:
+            classes = arr.astype(int).reshape(-1)
+        classes = np.clip(classes, 0, num_classes - 1)
         counts += np.bincount(classes, minlength=num_classes)
         samples += int(classes.shape[0])
 

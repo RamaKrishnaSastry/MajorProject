@@ -36,6 +36,8 @@ Expected label spaces:
 - DME classes: `0=No DME`, `1=Mild`, `2=Moderate` (**3 classes**)
 - DR classes: `0=No DR`, `1=Mild`, `2=Moderate`, `3=Severe NPDR`, `4=Proliferative` (**5 classes**)
 
+DME labels are treated as **ordinal** (order matters): No DME < Mild < Moderate.
+
 ---
 
 ## 4) QWK behavior and `max_batches`
@@ -108,4 +110,3 @@ python test_ordinal_weighted_loss.py
 
 ### TensorFlow import errors in tests
 - Install dependencies from `requirements.txt` in the active environment.
-
