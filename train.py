@@ -29,7 +29,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 DEFAULT_CONFIG: Dict = {
     "input_shape": (512, 512, 3),
-    "num_dme_classes": 4,
+    "num_dme_classes": 3,
+    "num_dr_classes": 5,
     "learning_rate": 1e-4,
     "batch_size": 8,
     "epochs": 30,
@@ -141,12 +142,12 @@ class _HistoryJsonCallback(keras.callbacks.Callback):
 def compile_dme_model(
     model: keras.Model,
     learning_rate: float = 1e-4,
-    num_dme_classes: int = 4,
+    num_dme_classes: int = 3,
 ) -> keras.Model:
     """Compile the DME fine-tuning model.
 
     Uses ``categorical_crossentropy`` for the DME head and ``mse`` for the
-    frozen DR head.
+    frozen DR regression head (DR loss weight is 0.0 since the DR head is frozen).
 
     Parameters
     ----------

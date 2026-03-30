@@ -48,8 +48,11 @@ except ImportError:
     _SKLEARN_AVAILABLE = False
     logger.warning("scikit-learn not installed – some metrics will be skipped.")
 
-DME_CLASS_NAMES = ["No DME", "Mild", "Moderate", "Severe"]
+DME_CLASS_NAMES = ["No DME", "Mild", "Moderate"]
 NUM_DME_CLASSES = len(DME_CLASS_NAMES)
+
+DR_CLASS_NAMES = ["No DR", "Mild", "Moderate", "Severe NPDR", "Proliferative DR"]
+NUM_DR_CLASSES = len(DR_CLASS_NAMES)
 
 
 # ---------------------------------------------------------------------------

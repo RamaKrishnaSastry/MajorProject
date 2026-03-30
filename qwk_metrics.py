@@ -45,17 +45,20 @@ except ImportError:
     _TF_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
-# DME class labels
+# DME class labels (3 classes: 0=No DME, 1=Mild, 2=Moderate)
 # ---------------------------------------------------------------------------
 
-DME_CLASS_NAMES = ["No DME", "Mild", "Moderate", "Severe"]
+DME_CLASS_NAMES = ["No DME", "Mild", "Moderate"]
 NUM_DME_CLASSES = len(DME_CLASS_NAMES)
+
+# DR class labels (5 classes: 0=No DR, 1=Mild, 2=Moderate, 3=Severe NPDR, 4=Proliferative)
+DR_CLASS_NAMES = ["No DR", "Mild", "Moderate", "Severe NPDR", "Proliferative DR"]
+NUM_DR_CLASSES = len(DR_CLASS_NAMES)
 
 # Ordinal boundary pairs (adjacent classes that are clinically ambiguous)
 BOUNDARY_PAIRS = [
     (0, 1, "No DME / Mild"),
     (1, 2, "Mild / Moderate"),
-    (2, 3, "Moderate / Severe"),
 ]
 
 
@@ -606,7 +609,8 @@ if _TF_AVAILABLE:
             Handles both single-output and multi-output models correctly.
             Includes robust error handling and validation.
             """
-            logs = logs or {}
+            if logs is None:
+                logs = {}
             
             try:
                 all_true = []

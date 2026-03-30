@@ -156,7 +156,11 @@ def build_aspp(
 def build_dr_head(x: tf.Tensor) -> tf.Tensor:
     """Build the Diabetic Retinopathy (DR) regression head.
 
-    Outputs a single scalar value representing DR severity (0–4).
+    Outputs a single scalar in [0, 1] representing normalised DR severity.
+    Map to integer grade at inference with ``round(output * 4)`` → class 0-4.
+
+    Keeping regression (not classification) preserves compatibility with
+    EyePACS-pretrained backbone weights, which were trained with this head.
 
     Parameters
     ----------
@@ -179,7 +183,7 @@ def build_dr_head(x: tf.Tensor) -> tf.Tensor:
 # DME head (Classification)
 # ---------------------------------------------------------------------------
 
-def build_dme_head(x: tf.Tensor, num_classes: int = 4) -> tf.Tensor:
+def build_dme_head(x: tf.Tensor, num_classes: int = 3) -> tf.Tensor:
     """Build the DME (Diabetic Macular Edema) classification head.
 
     Parameters
@@ -187,7 +191,7 @@ def build_dme_head(x: tf.Tensor, num_classes: int = 4) -> tf.Tensor:
     x : tf.Tensor
         Input feature map from ASPP.
     num_classes : int
-        Number of DME severity classes (default: 4 – No/Mild/Moderate/Severe).
+        Number of DME severity classes (default: 3 – No DME/Mild/Moderate).
 
     Returns
     -------
@@ -208,7 +212,7 @@ def build_dme_head(x: tf.Tensor, num_classes: int = 4) -> tf.Tensor:
 def build_model(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     backbone_weights: str = "imagenet",
-    num_dme_classes: int = 4,
+    num_dme_classes: int = 3,
     aspp_filters: int = 256,
     trainable: bool = True,
 ) -> keras.Model:
@@ -217,6 +221,9 @@ def build_model(
     Architecture:
     ``Input → Backbone (ResNet50) → ASPP → DR head + DME head``
 
+    DR head: regression (sigmoid → [0,1]; map to grade with ``round(out*4)``).
+    DME head: 3-class softmax (0=No DME, 1=Mild, 2=Moderate).
+
     Parameters
     ----------
     input_shape : tuple
@@ -224,7 +231,7 @@ def build_model(
     backbone_weights : str
         Initial backbone weights (``"imagenet"`` or ``None``).
     num_dme_classes : int
-        Number of output classes for the DME head (default: 4).
+        Number of output classes for the DME head (default: 3).
     aspp_filters : int
         Number of filters in each ASPP branch (default: 256).
     trainable : bool
@@ -250,10 +257,10 @@ def build_model(
     # ASPP module
     aspp_out = build_aspp(features, filters=aspp_filters)
     logger.info("✅ ASPP module added")
-    # DR head (regression)
+    # DR head (regression – compatible with EyePACS pre-trained weights)
     dr_out = build_dr_head(aspp_out)
 
-    # DME head (classification)
+    # DME head (3-class classification)
     dme_out = build_dme_head(aspp_out, num_classes=num_dme_classes)
 
     # Build model
@@ -281,7 +288,7 @@ def build_model(
 def build_model_dme_tuning(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     pretrained_weights: Optional[str] = None,
-    num_dme_classes: int = 4,
+    num_dme_classes: int = 3,
     aspp_filters: int = 256,
 ) -> keras.Model:
     """Build the DME fine-tuning model with only DME head trainable.
@@ -295,7 +302,7 @@ def build_model_dme_tuning(
     pretrained_weights : str, optional
         Path to pre-trained model weights to load.
     num_dme_classes : int
-        Number of DME severity classes.
+        Number of DME severity classes (default: 3).
     aspp_filters : int
         Number of filters in ASPP.
 

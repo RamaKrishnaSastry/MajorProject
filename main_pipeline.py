@@ -63,7 +63,8 @@ def set_global_seed(seed: int = 42) -> None:
 DEFAULT_PIPELINE_CONFIG = {
     "seed": 42,
     "input_shape": [512, 512, 3],
-    "num_dme_classes": 4,
+    "num_dme_classes": 3,
+    "num_dr_classes": 5,
     "batch_size": 8,
     "val_split": 0.2,
     "augment_train": True,

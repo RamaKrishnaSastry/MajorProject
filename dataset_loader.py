@@ -28,8 +28,11 @@ from preprocess import make_preprocess_fn
 # Constants
 # ---------------------------------------------------------------------------
 
-DME_CLASSES = {0: "No DME", 1: "Mild", 2: "Moderate", 3: "Severe"}
+DME_CLASSES = {0: "No DME", 1: "Mild", 2: "Moderate"}
 NUM_DME_CLASSES = len(DME_CLASSES)
+
+DR_CLASSES = {0: "No DR", 1: "Mild", 2: "Moderate", 3: "Severe NPDR", 4: "Proliferative DR"}
+NUM_DR_CLASSES = len(DR_CLASSES)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -44,8 +47,8 @@ def load_dme_csv(csv_path: str, image_dir: str) -> pd.DataFrame:
 
     The CSV is expected to have at least two columns:
     - ``Image name`` (or the first column) – image filename without extension
-    - ``Retinopathy grade`` (used as DR label, optional)
-    - ``Risk of macular edema `` (trailing space allowed) – DME label 0-3
+    - ``Retinopathy grade`` – DR label 0-4 (optional; defaults to 0 if absent)
+    - ``Risk of macular edema `` (trailing space allowed) – DME label 0-2
 
     Parameters
     ----------
@@ -57,21 +60,29 @@ def load_dme_csv(csv_path: str, image_dir: str) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        DataFrame with columns ``image_path`` and ``dme_label``.
+        DataFrame with columns ``image_path``, ``dme_label``, and ``dr_label``.
     """
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.strip()  # remove accidental whitespace
 
     # Flexible column detection
     image_col = _find_column(df, ["Image name", "image_name", "filename", "Image"])
-    label_col = _find_column(
+    dme_col = _find_column(
         df,
         [
             "Risk of macular edema",
             "DME_grade",
             "dme_label",
             "DME",
+        ],
+    )
+    dr_col = _find_column(
+        df,
+        [
             "Retinopathy grade",
+            "DR_grade",
+            "dr_label",
+            "DR",
         ],
     )
 
@@ -79,22 +90,31 @@ def load_dme_csv(csv_path: str, image_dir: str) -> pd.DataFrame:
         raise ValueError(
             f"Could not detect image name column in CSV. Available: {list(df.columns)}"
         )
-    if label_col is None:
+    if dme_col is None:
         raise ValueError(
             f"Could not detect DME label column in CSV. Available: {list(df.columns)}"
         )
 
-    logger.info("Using image column '%s' and label column '%s'", image_col, label_col)
+    if dr_col is None:
+        logger.warning(
+            "No DR label column found in CSV; DR labels will default to 0."
+        )
+
+    logger.info(
+        "Using image column '%s', DME column '%s', DR column '%s'",
+        image_col, dme_col, dr_col or "(none – defaulting to 0)",
+    )
 
     records = []
     image_dir = Path(image_dir)
     for _, row in df.iterrows():
         name = str(row[image_col]).strip()
-        label = int(row[label_col])
+        dme_label = int(row[dme_col])
+        dr_label = int(row[dr_col]) if dr_col is not None else 0
         # Try common extensions
         path = _resolve_image_path(image_dir, name)
         if path is not None:
-            records.append({"image_path": str(path), "dme_label": label})
+            records.append({"image_path": str(path), "dme_label": dme_label, "dr_label": dr_label})
         else:
             logger.warning("Image not found for '%s' – skipping.", name)
 
@@ -126,30 +146,31 @@ def _resolve_image_path(image_dir: Path, name: str) -> Optional[Path]:
 
 def create_mock_dataset(
     output_dir: str,
-    num_samples: int = 200,
+    num_samples: int = 150,
     image_size: Tuple[int, int] = (512, 512),
     seed: int = 42,
     balanced: bool = True,
 ) -> Tuple[str, str]:
     """Generate a small synthetic dataset for pipeline testing.
 
-    Creates random fundus-like images and a corresponding CSV file.
+    Creates random fundus-like images and a corresponding CSV file with both
+    DR (Retinopathy grade, 0-4) and DME (Risk of macular edema, 0-2) labels.
 
     Parameters
     ----------
     output_dir : str
         Directory where mock images and CSV will be saved.
     num_samples : int
-        Total number of synthetic images to create. Defaults to 200 to provide
-        enough samples per class for stable train/val splits.
+        Total number of synthetic images to create. Defaults to 150 to provide
+        50 samples per DME class for stable train/val splits.
     image_size : tuple
         (H, W) pixel dimensions of each image.
     seed : int
         Random seed for reproducibility.
     balanced : bool
-        If True (default), generate equal samples per class so that all four
-        DME grades are well-represented. If False, use a realistic imbalanced
-        distribution that mimics real IRDID proportions.
+        If True (default), generate equal DME samples per class so that all
+        three DME grades are well-represented. If False, use a realistic
+        imbalanced distribution that mimics real IDRiD proportions.
 
     Returns
     -------
@@ -164,22 +185,25 @@ def create_mock_dataset(
     image_dir.mkdir(parents=True, exist_ok=True)
 
     if balanced:
-        # Equal samples per class: ensures all classes present in train AND val
+        # Equal DME samples per class: ensures all classes present in train AND val
         samples_per_class = num_samples // NUM_DME_CLASSES
-        labels = np.repeat(np.arange(NUM_DME_CLASSES), samples_per_class)
+        dme_labels = np.repeat(np.arange(NUM_DME_CLASSES), samples_per_class)
         # Handle remainder
-        remainder = num_samples - len(labels)
+        remainder = num_samples - len(dme_labels)
         if remainder > 0:
             extra = rng.integers(0, NUM_DME_CLASSES, size=remainder)
-            labels = np.concatenate([labels, extra])
-        rng.shuffle(labels)
+            dme_labels = np.concatenate([dme_labels, extra])
+        rng.shuffle(dme_labels)
     else:
-        # Class distribution mimicking real IRDID imbalance
-        class_probs = [0.65, 0.18, 0.10, 0.07]
-        labels = rng.choice(NUM_DME_CLASSES, size=num_samples, p=class_probs)
+        # Class distribution mimicking real IDRiD imbalance (No DME is most common)
+        class_probs = [0.65, 0.20, 0.15]
+        dme_labels = rng.choice(NUM_DME_CLASSES, size=num_samples, p=class_probs)
+
+    # Generate independent DR labels (0-4, 5 classes)
+    dr_labels = rng.integers(0, NUM_DR_CLASSES, size=num_samples)
 
     records = []
-    for i, label in enumerate(labels):
+    for i, (dme_label, dr_label) in enumerate(zip(dme_labels, dr_labels)):
         name = f"mock_{i:04d}"
         img = rng.integers(30, 220, size=(*image_size, 3), dtype=np.uint8)
         # Add a circular vignette to simulate fundus style
@@ -189,7 +213,11 @@ def create_mock_dataset(
         mask = dist > (min(h, w) / 2 * 0.95)
         img[mask] = 0
         cv2.imwrite(str(image_dir / f"{name}.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-        records.append({"Image name": name, "Risk of macular edema": label})
+        records.append({
+            "Image name": name,
+            "Retinopathy grade": int(dr_label),
+            "Risk of macular edema": int(dme_label),
+        })
 
     csv_path = output_dir / "DME_Grades.csv"
     pd.DataFrame(records).to_csv(csv_path, index=False)
@@ -242,7 +270,8 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
 
 def _build_tf_dataset(
     image_paths: np.ndarray,
-    labels: np.ndarray,
+    dme_labels: np.ndarray,
+    dr_labels: np.ndarray,
     preprocess_fn,
     batch_size: int,
     shuffle: bool,
@@ -252,15 +281,21 @@ def _build_tf_dataset(
 ) -> tf.data.Dataset:
     """Internal helper – build a *tf.data.Dataset* from arrays.
     
-    CRITICAL FIX: Returns targets as dict {'dr_output': ..., 'dme_risk': ...}
-    to match multi-output model structure (DR regression + DME classification).
+    Returns targets as dict {'dr_output': ..., 'dme_risk': ...} to match the
+    multi-output model structure.
+
+    DR head  : regression (MSE).  Target = dr_label / 4.0  ∈ [0, 1], shape (1,).
+               Compatible with EyePACS-pretrained ``Dense(1, sigmoid)`` head.
+               At inference: ``round(prediction * 4)`` → DR grade 0-4.
+    DME head : 3-class softmax (categorical crossentropy).
+               Target = one-hot, shape (3,).
     """
-    # Convert DME labels to one-hot for classification
-    labels_dme_oh = tf.keras.utils.to_categorical(labels, num_classes=NUM_DME_CLASSES)
-    
-    # DR labels: use the same class label as regression (0.0-3.0)
-    labels_dr = labels.astype(np.float32).reshape(-1, 1)
-    
+    # Convert DME labels to one-hot for 3-class classification
+    labels_dme_oh = tf.keras.utils.to_categorical(dme_labels, num_classes=NUM_DME_CLASSES)
+
+    # DR labels: normalise to [0, 1] for sigmoid regression (÷ 4 since max grade = 4)
+    labels_dr = (dr_labels.astype(np.float32) / float(NUM_DR_CLASSES - 1)).reshape(-1, 1)
+
     # Dataset with both DR and DME labels
     ds = tf.data.Dataset.from_tensor_slices((image_paths, labels_dr, labels_dme_oh))
     
@@ -270,10 +305,9 @@ def _build_tf_dataset(
     # Load image and create multi-output target dict
     def load_and_format(path, dr_label, dme_label):
         image = preprocess_fn(path)
-        # CRITICAL: Return targets as dict matching model outputs
         targets = {
-            'dr_output': dr_label,      # Shape: (1,)
-            'dme_risk': dme_label,      # Shape: (4,) one-hot
+            'dr_output': dr_label,      # Shape: (1,) normalised float
+            'dme_risk': dme_label,      # Shape: (3,) one-hot
         }
         return image, targets
     
@@ -353,10 +387,11 @@ def build_datasets(
         raise ValueError("Dataset is empty – check csv_path and image_dir.")
 
     paths = df["image_path"].values
-    labels = df["dme_label"].values.astype(int)
+    dme_labels = df["dme_label"].values.astype(int)
+    dr_labels = df["dr_label"].values.astype(int)
 
-    train_paths, val_paths, train_labels, val_labels = train_test_split(
-        paths, labels, test_size=val_split, random_state=seed, stratify=labels
+    train_paths, val_paths, train_dme, val_dme, train_dr, val_dr = train_test_split(
+        paths, dme_labels, dr_labels, test_size=val_split, random_state=seed, stratify=dme_labels
     )
 
     logger.info(
@@ -364,11 +399,11 @@ def build_datasets(
     )
     
     # Log class distribution
-    train_dist = {c: int(np.sum(train_labels == c)) for c in range(NUM_DME_CLASSES)}
-    val_dist = {c: int(np.sum(val_labels == c)) for c in range(NUM_DME_CLASSES)}
+    train_dist = {c: int(np.sum(train_dme == c)) for c in range(NUM_DME_CLASSES)}
+    val_dist = {c: int(np.sum(val_dme == c)) for c in range(NUM_DME_CLASSES)}
     logger.info("Train distribution: %s | Val distribution: %s", train_dist, val_dist)
 
-    class_weights = compute_dme_class_weights(train_labels)
+    class_weights = compute_dme_class_weights(train_dme)
 
     preprocess_fn = make_preprocess_fn(
         target_size=target_size,
@@ -379,7 +414,8 @@ def build_datasets(
 
     train_ds = _build_tf_dataset(
         train_paths,
-        train_labels,
+        train_dme,
+        train_dr,
         preprocess_fn,
         batch_size=batch_size,
         shuffle=True,
@@ -389,7 +425,8 @@ def build_datasets(
     )
     val_ds = _build_tf_dataset(
         val_paths,
-        val_labels,
+        val_dme,
+        val_dr,
         preprocess_fn,
         batch_size=batch_size,
         shuffle=False,
@@ -427,10 +464,10 @@ def save_split_info(
     """
     df = load_dme_csv(csv_path, image_dir)
     paths = df["image_path"].values
-    labels = df["dme_label"].values.astype(int)
+    dme_labels = df["dme_label"].values.astype(int)
 
-    train_paths, val_paths, train_labels, val_labels = train_test_split(
-        paths, labels, test_size=val_split, random_state=seed, stratify=labels
+    train_paths, val_paths, train_dme, val_dme = train_test_split(
+        paths, dme_labels, test_size=val_split, random_state=seed, stratify=dme_labels
     )
 
     info = {
@@ -438,8 +475,8 @@ def save_split_info(
         "train_samples": len(train_paths),
         "val_samples": len(val_paths),
         "class_distribution": {
-            "train": {str(c): int(np.sum(train_labels == c)) for c in range(NUM_DME_CLASSES)},
-            "val": {str(c): int(np.sum(val_labels == c)) for c in range(NUM_DME_CLASSES)},
+            "train": {str(c): int(np.sum(train_dme == c)) for c in range(NUM_DME_CLASSES)},
+            "val": {str(c): int(np.sum(val_dme == c)) for c in range(NUM_DME_CLASSES)},
         },
         "val_split": val_split,
         "seed": seed,

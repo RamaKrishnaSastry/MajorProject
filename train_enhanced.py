@@ -45,7 +45,8 @@ except ImportError:
 
 DEFAULT_ENHANCED_CONFIG: Dict = {
     "input_shape": (512, 512, 3),
-    "num_dme_classes": 4,
+    "num_dme_classes": 3,
+    "num_dr_classes": 5,
     "learning_rate": 1e-4,
     "batch_size": 8,
     "epochs": 50,
@@ -431,7 +432,7 @@ class TrainingDiagnosticsCallback(keras.callbacks.Callback):
 def compile_model_enhanced(
     model: keras.Model,
     learning_rate: float = 1e-4,
-    num_dme_classes: int = 4,
+    num_dme_classes: int = 3,
     class_weights: Optional[Dict[int, float]] = None,
     ordinal_loss_weighting: bool = True,
 ) -> keras.Model:
@@ -455,7 +456,7 @@ def compile_model_enhanced(
             "dme_risk": dme_loss,
         },
         loss_weights={
-            "dr_output": 0.0,
+            "dr_output": 0.3,   # DR regression contributes to joint training
             "dme_risk": 1.0,
         },
         metrics={
