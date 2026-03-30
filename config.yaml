@@ -31,6 +31,8 @@ max_batches: null           # null = process entire validation set for accurate 
 # Medical domain class weights
 medical_importance: true    # Severe/Moderate classes weighted higher
 ordinal_penalty: true       # Boundary classes weighted extra
+# NOTE: class weights from loader are applied inside OrdinalWeightedCrossEntropy
+# when stageX.ordinal_loss_weighting=true (default below).
 
 # Preprocessing parameters (CLAHE + cropping)
 border_fraction: 0.10
@@ -47,7 +49,7 @@ stage1:
   lr_reduce_patience: 3
   lr_reduce_factor: 0.5
   min_lr: 1.0e-7
-  ordinal_loss_weighting: true
+  ordinal_loss_weighting: true  # Recommended for class imbalance + ordinal errors
 
 # ============================================================
 # STAGE 2: FINE-TUNING
@@ -59,7 +61,7 @@ stage2:
   lr_reduce_patience: 3
   lr_reduce_factor: 0.3
   min_lr: 1.0e-8
-  ordinal_loss_weighting: true
+  ordinal_loss_weighting: true  # Keep enabled for stable minority-class learning
 
 # ============================================================
 # MODEL ARCHITECTURE
