@@ -211,11 +211,25 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
 
     def get_config(self):
         config = super().get_config()
+        class_weights_list = None
+        if hasattr(self, "class_weights"):
+            try:
+                class_weights_list = self.class_weights.numpy().tolist()
+            except (AttributeError, TypeError, ValueError):
+                class_weights_list = None
         config.update({
             "num_classes": self.num_classes,
-            "focal_loss_gamma": self.focal_loss_gamma,
+            "focal_loss_gamma": float(self.focal_loss_gamma),
+            "class_weights": class_weights_list,
         })
         return config
+
+    @classmethod
+    def from_config(cls, config):
+        class_weights = config.pop("class_weights", None)
+        if class_weights is not None:
+            class_weights = {i: w for i, w in enumerate(class_weights)}
+        return cls(**config, class_weights=class_weights)
 
 
 def _extract_dme_labels(batch_labels):
