@@ -573,6 +573,12 @@ if _TF_AVAILABLE:
 
         Stores QWK history and triggers plateau detection for LR scheduling.
 
+        .. note::
+            When ``max_batches`` is set (default 10), QWK is computed on only
+            the first ``max_batches`` validation batches.  This is an *estimate*
+            of the true validation QWK, but it prevents unbounded memory growth
+            on large validation sets (OOM on GPU/CPU).
+
         Parameters
         ----------
         val_dataset : tf.data.Dataset
@@ -583,6 +589,10 @@ if _TF_AVAILABLE:
             Path to persist QWK history JSON.
         verbose : int
             Verbosity level (0 = silent, 1 = per-epoch).
+        max_batches : int or None
+            Maximum number of validation batches to process per epoch.
+            Set to ``None`` to process the entire validation set (may cause
+            OOM on large datasets).  Defaults to 10.
         """
 
         def __init__(
@@ -591,34 +601,45 @@ if _TF_AVAILABLE:
             num_classes: int = NUM_DME_CLASSES,
             history_path: str = "qwk_history.json",
             verbose: int = 1,
+            max_batches: Optional[int] = 10,
         ):
             super().__init__()
             self.val_dataset = val_dataset
             self.num_classes = num_classes
             self.history_path = history_path
             self.verbose = verbose
+            self.max_batches = max_batches
             self.qwk_history: List[float] = []
-            self.best_qwk: float = -1.0  # Changed from -np.inf for cleaner logging
+            self.best_qwk: float = -1.0
             self.best_epoch: int = 0
             # Backward-compatible alias used by older callback consumers
             self.history = self.qwk_history
 
         def on_epoch_end(self, epoch: int, logs=None):
             """Compute QWK at end of epoch and log it.
-            
+
             Handles both single-output and multi-output models correctly.
             Includes robust error handling and validation.
+
+            When ``self.max_batches`` is not ``None``, only the first
+            ``max_batches`` batches are used to compute QWK.  This keeps
+            memory usage bounded and prevents OOM crashes on large validation
+            sets; the reported QWK is an approximation.
             """
             # Keep caller-provided dict object intact; do not replace empty {}
             # with a new dict (important for Keras callback log propagation).
             if logs is None:
                 logs = {}
-            
+
             try:
                 all_true = []
                 all_pred = []
-                
+                batch_count = 0
+
                 for batch_idx, batch_data in enumerate(self.val_dataset):
+                    if self.max_batches is not None and batch_count >= self.max_batches:
+                        break
+
                     try:
                         # Handle tf.data format: (images, labels)
                         if len(batch_data) == 2:
@@ -626,7 +647,7 @@ if _TF_AVAILABLE:
                         else:
                             logger.warning(f"Unexpected batch format at batch {batch_idx}: {type(batch_data)}")
                             continue
-                        
+
                         # Extract true labels - handle dict and tuple formats
                         if isinstance(batch_labels, dict):
                             # Multi-output model: dict of outputs
@@ -637,10 +658,10 @@ if _TF_AVAILABLE:
                         else:
                             # Single output
                             dme_labels = batch_labels
-                        
+
                         # Get predictions - handle dict and tuple formats
                         predictions = self.model(images, training=False)
-                        
+
                         if isinstance(predictions, dict):
                             # Multi-output model: dict of predictions
                             dme_preds = predictions.get('dme_risk', predictions.get('dme_output'))
@@ -650,72 +671,75 @@ if _TF_AVAILABLE:
                         else:
                             # Single output
                             dme_preds = predictions
-                        
+
                         # Validate before conversion
                         if dme_labels is None or dme_preds is None:
                             logger.warning(f"Batch {batch_idx}: labels or preds is None")
                             continue
-                        
+
                         # Convert to numpy and get class indices
                         try:
                             true_classes = np.argmax(dme_labels.numpy(), axis=-1)
                         except (AttributeError, TypeError):
                             # Already numpy or array-like
                             true_classes = np.argmax(np.asarray(dme_labels), axis=-1)
-                        
+
                         try:
                             pred_classes = np.argmax(dme_preds.numpy(), axis=-1)
                         except (AttributeError, TypeError):
                             # Already numpy or array-like
                             pred_classes = np.argmax(np.asarray(dme_preds), axis=-1)
-                        
+
                         all_true.append(true_classes)
                         all_pred.append(pred_classes)
-                        
+                        batch_count += 1
+
                     except Exception as e:
                         logger.warning(f"Error processing batch {batch_idx}: {str(e)}")
                         continue
-                
+
                 # Check if we collected any data
                 if not all_true or not all_pred:
                     logger.warning(f"Epoch {epoch+1}: No valid predictions collected")
                     logs['val_qwk'] = 0.0
                     return
-                
+
                 # Concatenate all batches
                 y_true = np.concatenate(all_true, axis=0)
                 y_pred = np.concatenate(all_pred, axis=0)
-                
+
                 # Validate data
                 if len(y_true) == 0 or len(y_pred) == 0:
                     logger.warning(f"Epoch {epoch+1}: Empty prediction arrays")
                     logs['val_qwk'] = 0.0
                     return
-                
+
                 # Compute QWK
                 qwk = compute_quadratic_weighted_kappa(y_true, y_pred, num_classes=self.num_classes)
-                
+
                 # Log it
                 logs['val_qwk'] = float(qwk)
-                
+
                 # Track history
                 self.qwk_history.append(float(qwk))
-                
+
                 # Update best QWK
                 if qwk > self.best_qwk:
                     self.best_qwk = qwk
                     self.best_epoch = epoch + 1
-                
+
                 # Diagnostic logging
                 unique_pred = np.unique(y_pred)
                 class_dist = np.bincount(y_true, minlength=self.num_classes)
-                
+
                 if self.verbose:
+                    approx_note = f" (approx, {batch_count} batches)" if self.max_batches is not None else ""
                     logger.info(
-                        f"Epoch {epoch+1}: val_qwk={qwk:.4f} (best={self.best_qwk:.4f} @ epoch {self.best_epoch}) | "
+                        f"Epoch {epoch+1}: val_qwk={qwk:.4f}{approx_note} "
+                        f"(best={self.best_qwk:.4f} @ epoch {self.best_epoch}) | "
                         f"pred_classes={list(unique_pred)} | class_dist={dict(enumerate(class_dist))}"
                     )
-                
+
                 # Save history to JSON
                 if self.history_path:
                     history_data = {
@@ -728,62 +752,10 @@ if _TF_AVAILABLE:
                             json.dump(history_data, f, indent=2)
                     except Exception as e:
                         logger.warning(f"Failed to save QWK history to {self.history_path}: {e}")
-            
+
             except Exception as e:
                 logger.error(f"Critical error in QWK computation at epoch {epoch+1}: {e}", exc_info=True)
                 logs['val_qwk'] = 0.0
-            # if self.verbose:
-            #     logger.info("Epoch %d: val_qwk = %.4f (best=%.4f @ epoch %d)",
-            #                 epoch + 1, qwk, self.best_qwk, self.best_epoch)
-
-        #this is batch processing to prevent memory leak issues with large validation sets. It computes QWK on the first 10 batches (40 samples) to get a quick estimate without overloading memory.
-        # def on_epoch_end(self, epoch: int, logs=None):
-        #     """Compute QWK on validation set at epoch end."""
-        #     logs = logs or {}
-            
-        #     y_true_all = []
-        #     y_pred_all = []
-            
-        #     # Process validation data in smaller batches to avoid memory issues
-        #     batch_size = 4  # Reduce from default batch size
-        #     batch_count = 0
-            
-        #     try:
-        #         for images, labels in self.val_dataset:
-        #             # Limit to avoid memory overload
-        #             if batch_count >= 10:  # Only use first 10 batches for QWK (~40 samples)
-        #                 break
-                    
-        #             predictions = self.model(images, training=False)
-        #             if isinstance(predictions, dict):
-        #                 predictions = predictions.get(self.output_name, predictions.get("dme_risk"))
-                    
-        #             y_true_all.append(tf.argmax(labels, axis=-1).numpy())
-        #             y_pred_all.append(tf.argmax(predictions, axis=-1).numpy())
-        #             batch_count += 1
-                
-        #         y_true = np.concatenate(y_true_all, axis=0)
-        #         y_pred = np.concatenate(y_pred_all, axis=0)
-                
-        #         qwk = compute_quadratic_weighted_kappa(y_true, y_pred, self.num_classes)
-        #         logs["val_qwk"] = qwk
-                
-        #         logger.info("Epoch %d: val_qwk = %.4f", epoch + 1, qwk)
-                
-        #     except Exception as e:
-        #         logger.warning("QWK computation failed at epoch %d: %s", epoch + 1, e)
-        #         logs["val_qwk"] = qwk
-            
-        #     if self.verbose:
-        #         logger.info(
-        #             f"Epoch {epoch + 1}: val_qwk = {qwk:.4f}"
-        #         )
-            
-        #     # Persist history
-        #     if self.history:
-        #         self.history.append(float(qwk))
-        #         with open(self.history_path, 'w') as f:
-        #             json.dump({'qwk_history': self.history}, f, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -797,7 +769,7 @@ def main():
     parser = argparse.ArgumentParser(description="Compute QWK metrics from predictions")
     parser.add_argument("--y-true", type=str, required=True, help="Path to y_true npy/txt")
     parser.add_argument("--y-pred", type=str, required=True, help="Path to y_pred npy/txt")
-    parser.add_argument("--num-classes", type=int, default=4)
+    parser.add_argument("--num-classes", type=int, default=NUM_DME_CLASSES)
     parser.add_argument("--output-dir", type=str, default=".")
     args = parser.parse_args()
 
