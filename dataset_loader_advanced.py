@@ -25,6 +25,7 @@ from sklearn.utils.class_weight import compute_class_weight
 from dataset_loader import (
     DME_CLASSES,
     NUM_DME_CLASSES,
+    NUM_DR_CLASSES,
     load_dme_csv,
     create_mock_dataset,
     _build_tf_dataset,
@@ -53,7 +54,6 @@ MEDICAL_IMPORTANCE_WEIGHTS = {
     0: 1.0,   # No DME   – baseline
     1: 1.2,   # Mild     – early detection important
     2: 1.5,   # Moderate – treatment decision boundary
-    3: 2.0,   # Severe   – urgent referral needed
 }
 
 
@@ -397,16 +397,24 @@ def build_datasets_advanced(
         raise ValueError("Dataset is empty – check csv_path and image_dir.")
 
     paths = df["image_path"].values
-    labels = df["dme_label"].values.astype(int)
+    dme_labels = df["dme_label"].values.astype(int)
+    dr_labels = df["dr_label"].values.astype(int)
 
-    # QWK-aware stratified split
-    train_paths, val_paths, train_labels, val_labels = ordinal_stratified_split(
-        paths, labels, val_split=val_split, seed=seed, num_classes=NUM_DME_CLASSES,
+    # QWK-aware stratified split (stratify on DME labels)
+    train_paths, val_paths, train_dme, val_dme = ordinal_stratified_split(
+        paths, dme_labels, val_split=val_split, seed=seed, num_classes=NUM_DME_CLASSES,
     )
 
-    # Ordinal class weights
+    # Apply the same split to DR labels using path-index mapping
+    path_to_idx = {p: i for i, p in enumerate(paths)}
+    train_indices = np.array([path_to_idx[p] for p in train_paths])
+    val_indices = np.array([path_to_idx[p] for p in val_paths])
+    train_dr = dr_labels[train_indices]
+    val_dr = dr_labels[val_indices]
+
+    # Ordinal class weights (based on DME labels)
     class_weights = compute_ordinal_class_weights(
-        train_labels,
+        train_dme,
         num_classes=NUM_DME_CLASSES,
         medical_importance=medical_importance,
         ordinal_penalty=ordinal_penalty,
@@ -420,12 +428,12 @@ def build_datasets_advanced(
     )
 
     train_ds = _build_tf_dataset(
-        train_paths, train_labels, preprocess_fn,
+        train_paths, train_dme, train_dr, preprocess_fn,
         batch_size=batch_size, shuffle=True, augment=augment_train,
         cache=cache, seed=seed,
     )
     val_ds = _build_tf_dataset(
-        val_paths, val_labels, preprocess_fn,
+        val_paths, val_dme, val_dr, preprocess_fn,
         batch_size=batch_size, shuffle=False, augment=False,
         cache=cache, seed=seed,
     )
@@ -436,10 +444,10 @@ def build_datasets_advanced(
         "val_samples": int(len(val_paths)),
         "class_distribution": {
             "train": {
-                str(i): int(np.sum(train_labels == i)) for i in range(NUM_DME_CLASSES)
+                str(i): int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)
             },
             "val": {
-                str(i): int(np.sum(val_labels == i)) for i in range(NUM_DME_CLASSES)
+                str(i): int(np.sum(val_dme == i)) for i in range(NUM_DME_CLASSES)
             },
         },
         "class_weights": {str(k): round(v, 4) for k, v in class_weights.items()},
@@ -458,7 +466,7 @@ def build_datasets_advanced(
     if save_balance_plot:
         balance_path = os.path.join(output_dir, "dataset_balance.png")
         plot_dataset_balance(
-            labels, class_weights, output_path=balance_path,
+            dme_labels, class_weights, output_path=balance_path,
         )
 
     return train_ds, val_ds, class_weights, split_info

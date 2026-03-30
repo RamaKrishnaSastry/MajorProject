@@ -14,19 +14,25 @@ def main() -> None:
     if out_dir.exists():
         shutil.rmtree(out_dir)
 
+    # Default num_samples=150 → 50 per DME class × 3 classes
     csv_path, image_dir = create_mock_dataset(str(out_dir))
     df = pd.read_csv(csv_path)
 
     counts = df["Risk of macular edema"].value_counts().sort_index().to_dict()
-    expected = {0: 50, 1: 50, 2: 50, 3: 50}
+    expected = {0: 50, 1: 50, 2: 50}
 
-    assert len(df) == 200, f"Expected 200 rows, found {len(df)}"
+    assert len(df) == 150, f"Expected 150 rows, found {len(df)}"
     assert counts == expected, f"Expected class counts {expected}, got {counts}"
 
-    image_count = len(list(Path(image_dir).glob("*.jpg")))
-    assert image_count == 200, f"Expected 200 images, found {image_count}"
+    # Verify DR labels are also present with values in 0-4
+    assert "Retinopathy grade" in df.columns, "Missing 'Retinopathy grade' column"
+    dr_values = set(df["Retinopathy grade"].unique())
+    assert dr_values.issubset({0, 1, 2, 3, 4}), f"DR labels out of range: {dr_values}"
 
-    print("PASS: balanced mock dataset has 200 images and 50 samples per class.")
+    image_count = len(list(Path(image_dir).glob("*.jpg")))
+    assert image_count == 150, f"Expected 150 images, found {image_count}"
+
+    print("PASS: balanced mock dataset has 150 images, 50 samples per DME class, and DR labels 0-4.")
 
 
 if __name__ == "__main__":

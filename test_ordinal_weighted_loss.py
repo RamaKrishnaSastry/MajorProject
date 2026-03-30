@@ -10,16 +10,16 @@ from train_enhanced import OrdinalWeightedCrossEntropy
 
 
 def main() -> None:
-    loss_fn = OrdinalWeightedCrossEntropy(num_classes=4, class_weights={0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0})
+    loss_fn = OrdinalWeightedCrossEntropy(num_classes=3, class_weights={0: 1.0, 1: 1.0, 2: 1.0})
 
     # Perfect prediction should still produce non-negative (small) CE-driven loss,
     # but never force an all-zero weighting.
-    y_true = tf.one_hot([0, 1, 2, 3], depth=4, dtype=tf.float32)
-    y_pred = tf.one_hot([0, 1, 2, 3], depth=4, dtype=tf.float32)
+    y_true = tf.one_hot([0, 1, 2], depth=3, dtype=tf.float32)
+    y_pred = tf.one_hot([0, 1, 2], depth=3, dtype=tf.float32)
     perfect_loss = float(loss_fn(y_true, y_pred).numpy())
 
     # Misclassified prediction should be >= perfect prediction loss.
-    y_pred_bad = tf.one_hot([3, 2, 1, 0], depth=4, dtype=tf.float32)
+    y_pred_bad = tf.one_hot([2, 0, 1], depth=3, dtype=tf.float32)
     bad_loss = float(loss_fn(y_true, y_pred_bad).numpy())
 
     assert perfect_loss >= 0.0, f"Perfect loss must be >=0, got {perfect_loss}"

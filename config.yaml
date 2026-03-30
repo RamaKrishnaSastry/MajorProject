@@ -12,7 +12,8 @@
 # ============================================================
 seed: 42
 input_shape: [512, 512, 3]
-num_dme_classes: 4        # 0=No DME, 1=Mild, 2=Moderate, 3=Severe
+num_dme_classes: 3        # 0=No DME, 1=Mild, 2=Moderate
+num_dr_classes: 5         # 0=No DR, 1=Mild, 2=Moderate, 3=Severe NPDR, 4=Proliferative
 output_dir: pipeline_outputs
 checkpoint_dir: pipeline_outputs/checkpoints
 
