@@ -60,6 +60,9 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "qwk_history_path": "qwk_history.json",
     # Ordinal loss weight matrix: larger penalty for distant class misclassification
     "ordinal_loss_weighting": True,
+    # Focal loss gamma: 0 = standard CE, 2.0 = standard focal loss.
+    # Higher gamma reduces gradient for easy majority-class samples.
+    "focal_loss_gamma": 2.0,
     "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
 }
@@ -102,18 +105,37 @@ def build_ordinal_weight_matrix(num_classes: int = NUM_DME_CLASSES) -> np.ndarra
 
 
 class OrdinalWeightedCrossEntropy(keras.losses.Loss):
-    """Ordinal-aware weighted cross-entropy loss."""
+    """Ordinal-aware weighted cross-entropy loss with optional focal loss.
 
-    def __init__(self, num_classes=4, class_weights=None, **kwargs):
+    Combines three complementary mechanisms to address class imbalance and
+    ordinal misclassification:
+
+    1. **Ordinal penalty matrix** – off-diagonal entries are the normalised
+       class distance ``(i-j)^2 / (K-1)^2`` while the diagonal remains 1.0 to
+       keep a non-zero gradient for correct predictions.
+
+    2. **Per-class weights** – scales the loss contribution of each true
+       class to counteract frequency imbalance (minority classes get a higher
+       multiplier).
+
+    3. **Focal loss** (gamma > 0) – down-weights easy-to-predict samples
+       (high predicted probability for the true class) so the optimiser
+       focuses on hard, misclassified examples.  With severe class imbalance
+       the majority class is "easy", so focal loss naturally shifts attention
+       to minority classes.
+    """
+
+    def __init__(self, num_classes=3, class_weights=None, focal_loss_gamma=2.0, **kwargs):
         super().__init__(**kwargs)
         self.num_classes = num_classes
-        
+        self.focal_loss_gamma = focal_loss_gamma
+
         # Create ordinal weight matrix
         self.ordinal_matrix = self._build_ordinal_matrix(num_classes)
-        
+
         # Class weights (to handle imbalance)
         if class_weights is not None:
-            # Convert to tensor: {0: 0.067, 1: 0.157, ...} → [0.067, 0.157, ...]
+            # Convert to tensor: {0: 0.413, 1: 1.925, 2: 0.662} → [0.413, 1.925, 0.662]
             self.class_weights = tf.constant(
                 [class_weights.get(i, 1.0) for i in range(num_classes)],
                 dtype=tf.float32
@@ -124,49 +146,96 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
     def _build_ordinal_matrix(self, num_classes):
         """Build ordinal weight matrix (penalize distant misclassifications).
 
-        IMPORTANT: diagonal weights must be non-zero so correct predictions still
-        contribute cross-entropy gradients.
+        Diagonal = 1.0 (correct predictions retain full CE gradient).
+        Off-diagonal = normalised_distance so far misclassifications receive
+        larger penalties than near-boundary misclassifications.
+
+        For 3 classes this produces:
+            [[1.00, 0.25, 1.00],
+             [0.25, 1.00, 0.25],
+             [1.00, 0.25, 1.00]]
         """
         matrix = []
         for i in range(num_classes):
             row = []
             for j in range(num_classes):
-                if i==j:
-                    distance = 1.0  # No penalty for correct class
+                if i == j:
+                    weight = 1.0  # Correct prediction: base weight
                 else:
+                    # num_classes >= 2 is assumed; (num_classes-1)^2 >= 1
                     distance = ((i - j) ** 2) / ((num_classes - 1) ** 2)
-                row.append(distance)
+                    weight = distance
+                row.append(weight)
             matrix.append(row)
         return tf.constant(matrix, dtype=tf.float32)
 
     def call(self, y_true, y_pred):
-        """Compute loss with ordinal + class weighting."""
-        # y_true: (batch, num_classes) one-hot encoded
-        # y_pred: (batch, num_classes) probabilities
-        
-        # Standard cross-entropy
+        """Compute loss with ordinal + class weighting + focal scaling.
+
+        Parameters
+        ----------
+        y_true : tensor, shape (batch, num_classes)
+            One-hot encoded true labels.
+        y_pred : tensor, shape (batch, num_classes)
+            Predicted class probabilities.
+        """
+        # Standard cross-entropy per sample
         ce_loss = keras.losses.categorical_crossentropy(y_true, y_pred)
-        
-        # Get true class indices
+
+        # Focal loss scaling: down-weight easy samples (high p_t)
+        if self.focal_loss_gamma > 0:
+            # p_t = predicted probability for the true class
+            p_t = tf.reduce_sum(y_true * y_pred, axis=-1)
+            p_t = tf.clip_by_value(p_t, 1e-7, 1.0)
+            focal_factor = tf.pow(1.0 - p_t, self.focal_loss_gamma)
+            ce_loss = focal_factor * ce_loss
+
+        # Get true / predicted class indices
         y_true_class = tf.argmax(y_true, axis=1)  # (batch,)
         y_pred_class = tf.argmax(y_pred, axis=1)  # (batch,)
-        
-        # Apply ordinal weighting
+
+        # Ordinal penalty: misclassifications get weight > 1.0
         ordinal_weights = tf.gather_nd(
             self.ordinal_matrix,
             tf.stack([y_true_class, y_pred_class], axis=1)
         )  # (batch,)
-        
-        # Apply class weights
+
+        # Per-class imbalance correction
         class_weights_per_sample = tf.gather(self.class_weights, y_true_class)  # (batch,)
-        
-        # Combine all weights
+
+        # Combine all weights and apply
         total_weights = ordinal_weights * class_weights_per_sample
-        
-        # Weighted loss
         weighted_loss = ce_loss * total_weights
-        
+
         return tf.reduce_mean(weighted_loss)
+
+    def get_config(self):
+        config = super().get_config()
+        class_weights_list = None
+        class_weights_tensor = getattr(self, "class_weights", None)
+        if isinstance(class_weights_tensor, (tf.Tensor, tf.Variable)):
+            try:
+                class_weights_list = class_weights_tensor.numpy().tolist()
+            except (AttributeError, TypeError, ValueError):
+                class_weights_list = None
+        config.update({
+            "num_classes": self.num_classes,
+            "focal_loss_gamma": float(getattr(self, "focal_loss_gamma", 0.0)),
+            "class_weights": class_weights_list,
+        })
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        class_weights = config.pop("class_weights", None)
+        if isinstance(class_weights, list):
+            try:
+                class_weights = {i: float(w) for i, w in enumerate(class_weights)}
+            except (TypeError, ValueError):
+                class_weights = None
+        elif not isinstance(class_weights, dict):
+            class_weights = None
+        return cls(**config, class_weights=class_weights)
 
 
 def _extract_dme_labels(batch_labels):
@@ -502,6 +571,7 @@ def compile_model_enhanced(
     num_dme_classes: int = 3,
     class_weights: Optional[Dict[int, float]] = None,
     ordinal_loss_weighting: bool = True,
+    focal_loss_gamma: float = 2.0,
 ) -> keras.Model:
     """Compile with ordinal + class weighting baked into loss."""
     
@@ -511,8 +581,10 @@ def compile_model_enhanced(
         dme_loss = OrdinalWeightedCrossEntropy(
             num_classes=num_dme_classes,
             class_weights=class_weights,
+            focal_loss_gamma=focal_loss_gamma,
         )
         logger.info("Using ordinal-weighted cross-entropy loss with class balancing.")
+        logger.info("Focal loss gamma=%.1f (0=disabled).", focal_loss_gamma)
         if class_weights:
             logger.info("DME class weights applied in loss: %s", class_weights)
     else:
@@ -720,6 +792,7 @@ def train_enhanced(
         num_dme_classes=cfg["num_dme_classes"],
         class_weights=class_weights,
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
+        focal_loss_gamma=cfg.get("focal_loss_gamma", 2.0),
     )
 
     callbacks = build_enhanced_callbacks(val_ds, cfg)

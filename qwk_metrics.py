@@ -732,13 +732,30 @@ if _TF_AVAILABLE:
                 # Diagnostic logging
                 unique_pred = np.unique(y_pred)
                 class_dist = np.bincount(y_true, minlength=self.num_classes)
+                pred_dist = np.bincount(y_pred, minlength=self.num_classes)
+
+                # Per-class accuracy for debug insight
+                per_class_acc = {}
+                for c in range(self.num_classes):
+                    mask = y_true == c
+                    if mask.sum() > 0:
+                        per_class_acc[c] = float((y_pred[mask] == c).mean())
 
                 if self.verbose:
                     approx_note = f" (approx, {batch_count} batches)" if self.max_batches is not None else ""
                     logger.info(
                         f"Epoch {epoch+1}: val_qwk={qwk:.4f}{approx_note} "
                         f"(best={self.best_qwk:.4f} @ epoch {self.best_epoch}) | "
-                        f"pred_classes={list(unique_pred)} | class_dist={dict(enumerate(class_dist))}"
+                        f"pred_classes={list(unique_pred)} | class_dist={dict(enumerate(class_dist))} | "
+                        f"pred_dist={dict(enumerate(pred_dist))} | per_class_acc={per_class_acc}"
+                    )
+
+                # Model collapse detection: warn if only one class is predicted
+                if len(unique_pred) == 1:
+                    logger.warning(
+                        f"Epoch {epoch+1}: MODEL COLLAPSE DETECTED – model predicts only "
+                        f"class {unique_pred[0]} for all {len(y_pred)} validation samples. "
+                        "Consider increasing focal_loss_gamma, class weights, or learning rate."
                     )
 
                 # Save history to JSON
