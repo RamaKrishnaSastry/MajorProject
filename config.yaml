@@ -64,6 +64,7 @@ stage2:
 model:
   backbone: resnet50
   backbone_weights: imagenet
+  backbone_weights_path: null     # Path to custom .h5 backbone weights (overrides backbone_weights)
   aspp_filters: 256
   dr_head_units: 256
   dme_head_units: 256

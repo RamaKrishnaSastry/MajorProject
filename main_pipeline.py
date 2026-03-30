@@ -207,6 +207,7 @@ def stage_training(
     stage_name: str = "stage1",
     pretrained_weights: Optional[str] = None,
     eyepacs_backbone: Optional[str] = None,
+    backbone_weights_path: Optional[str] = None,
 ) -> tuple:
     """Stage 1 / Stage 2: Training.
 
@@ -226,6 +227,10 @@ def stage_training(
         Pre-trained weights path.
     eyepacs_backbone : str, optional
         Path to EyePACS backbone weights saved by preprocessing.ipynb.
+    backbone_weights_path : str, optional
+        Path to a custom ``.h5`` backbone weights file.  When provided,
+        the backbone is initialised with these weights instead of ImageNet
+        (Stage 1 custom transfer learning).
 
     Returns
     -------
@@ -268,6 +273,7 @@ def stage_training(
         class_weights=class_weights,
         pretrained_weights=pretrained_weights,
         eyepacs_backbone=eyepacs_backbone,
+        backbone_weights_path=backbone_weights_path,
         config=train_config,
         output_weights=output_weights,
     )
@@ -376,6 +382,7 @@ def run_pipeline(
     config_path: Optional[str] = None,
     two_stage: bool = True,
     eyepacs_backbone: Optional[str] = None,
+    backbone_weights_path: Optional[str] = None,
 ) -> Dict:
     """Run the full multi-stage training and evaluation pipeline.
 
@@ -395,6 +402,10 @@ def run_pipeline(
         Path to EyePACS backbone weights file saved by preprocessing.ipynb.
         When provided, stage 1 uses EyePACS-pretrained weights instead of
         ImageNet, enabling transfer learning benchmarks.
+    backbone_weights_path : str, optional
+        Path to a custom ``.h5`` backbone weights file for Stage 1.  Enables
+        transfer learning from any pre-trained backbone (e.g. EyePACS,
+        proprietary).  Ignored when ``eyepacs_backbone`` is set.
 
     Returns
     -------
@@ -425,9 +436,12 @@ def run_pipeline(
     logger.info("\n" + "=" * 60 + "\nSTAGE 1: Initial Training\n" + "=" * 60)
     if eyepacs_backbone is not None:
         logger.info("Using EyePACS backbone weights: '%s'", eyepacs_backbone)
+    elif backbone_weights_path is not None:
+        logger.info("Using custom backbone weights: '%s'", backbone_weights_path)
     model, history1, weights1 = stage_training(
         train_ds, val_ds, class_weights, cfg, stage_name="stage1",
         eyepacs_backbone=eyepacs_backbone,
+        backbone_weights_path=backbone_weights_path,
     )
     metrics1 = stage_evaluation(model, val_ds, cfg, stage_name="stage1")
     all_metrics["stage1"] = metrics1
@@ -476,6 +490,11 @@ def main():
                         help="Path to EyePACS backbone weights (.weights.h5) saved by "
                              "preprocessing.ipynb. When provided, stage 1 uses EyePACS "
                              "transfer learning instead of ImageNet.")
+    parser.add_argument("--backbone-weights-path", type=str, default=None,
+                        metavar="WEIGHTS_PATH",
+                        help="Path to a custom backbone weights file (.h5) for Stage 1. "
+                             "Enables transfer learning from any pre-trained backbone "
+                             "(e.g. EyePACS, proprietary). Ignored when --use-eyepacs is set.")
     args = parser.parse_args()
 
     if args.mock or args.csv is None:
@@ -502,6 +521,7 @@ def main():
         config=cfg,
         two_stage=not args.single_stage,
         eyepacs_backbone=args.use_eyepacs,
+        backbone_weights_path=args.backbone_weights_path,
     )
 
     print("\nPipeline Report:")

@@ -40,6 +40,7 @@ def build_backbone(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     weights: str = "imagenet",
     trainable: bool = True,
+    weights_path: Optional[str] = None,
 ) -> keras.Model:
     """Build a ResNet50 backbone.
 
@@ -51,6 +52,10 @@ def build_backbone(
         Pre-trained weights source.  Use ``"imagenet"`` or ``None``.
     trainable : bool
         Whether backbone weights should be updated during training.
+    weights_path : str, optional
+        Path to a custom ``.h5`` weights file.  When provided the backbone is
+        initialised with ``weights`` (e.g. ``None``) and the custom weights are
+        loaded afterwards, overriding any ImageNet initialisation.
 
     Returns
     -------
@@ -82,6 +87,11 @@ def build_backbone(
     output = base.get_layer("conv4_block6_out").output
     backbone = keras.Model(inputs=base.input, outputs=output, name="resnet50_conv4_backbone")
     backbone.trainable = trainable
+
+    if weights_path is not None:
+        backbone.load_weights(weights_path, skip_mismatch=True)
+        logger.info("✅ Loaded custom backbone weights from '%s'.", weights_path)
+
     logger.info(
         "✅ Backbone: ResNet50@conv4_block6_out, trainable=%s, output shape=%s",
         trainable,
@@ -228,6 +238,7 @@ def build_model(
     num_dme_classes: int = 3,
     aspp_filters: int = 256,
     trainable: bool = True,
+    backbone_weights_path: Optional[str] = None,
 ) -> keras.Model:
     """Build the complete multi-task DR + DME model.
 
@@ -249,6 +260,10 @@ def build_model(
         Number of filters in each ASPP branch (default: 256).
     trainable : bool
         Whether all model weights should be trainable (default: True).
+    backbone_weights_path : str, optional
+        Path to a custom ``.h5`` backbone weights file.  When provided, these
+        weights are loaded into the backbone after construction, taking
+        priority over ``backbone_weights``.
 
     Returns
     -------
@@ -263,6 +278,7 @@ def build_model(
         input_shape=input_shape,
         weights=backbone_weights,
         trainable=trainable,  # ✅ PROPAGATE trainable flag
+        weights_path=backbone_weights_path,
     )
     features = backbone(inputs)
     logger.info("✅ Backbone: %d parameters", backbone.count_params())
@@ -303,6 +319,7 @@ def build_model_dme_tuning(
     pretrained_weights: Optional[str] = None,
     num_dme_classes: int = 3,
     aspp_filters: int = 256,
+    backbone_weights_path: Optional[str] = None,
 ) -> keras.Model:
     """Build the DME fine-tuning model with only DME head trainable.
     
@@ -318,6 +335,10 @@ def build_model_dme_tuning(
         Number of DME severity classes (default: 3).
     aspp_filters : int
         Number of filters in ASPP.
+    backbone_weights_path : str, optional
+        Path to a custom ``.h5`` backbone weights file.  When provided, these
+        weights are loaded into the backbone before the full model weights are
+        applied.
 
     Returns
     -------
@@ -331,6 +352,7 @@ def build_model_dme_tuning(
         num_dme_classes=num_dme_classes,
         aspp_filters=aspp_filters,
         trainable=True,  # Start with all trainable
+        backbone_weights_path=backbone_weights_path,
     )
 
     # Load pre-trained weights if provided
