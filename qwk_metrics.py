@@ -595,78 +595,140 @@ if _TF_AVAILABLE:
             self.history_path = history_path
             self.verbose = verbose
             self.qwk_history: List[float] = []
-            self.best_qwk: float = -1.0  # QWK minimum is -1
-            self.best_epoch: int = 1
-            # Backward-compatible alias used by older callback consumers.
+            self.best_qwk: float = -1.0  # Changed from -np.inf for cleaner logging
+            self.best_epoch: int = 0
+            # Backward-compatible alias used by older callback consumers
             self.history = self.qwk_history
 
         def on_epoch_end(self, epoch: int, logs=None):
-            """Compute QWK at end of epoch and log it."""
-            if logs is None:
-                logs = {}
-
-            all_true = []
-            all_pred = []
-
-            for images, batch_labels in self.val_dataset:
-                # Handle multi-output case: labels is a dict
-                if isinstance(batch_labels, dict):
-                    dme_labels = batch_labels['dme_risk']
-                else:
-                    dme_labels = batch_labels
-
-                # Get predictions from multi-output model
-                predictions = self.model(images, training=False)
-
-                # Handle multi-output predictions: dict, list, or single tensor
-                if isinstance(predictions, dict):
-                    dme_preds = predictions['dme_risk']
-                elif isinstance(predictions, (list, tuple)):
-                    # Model returns [dr_output, dme_risk] – DME is second output
-                    dme_preds = predictions[1]
-                else:
-                    dme_preds = predictions
-
-                # Convert to numpy and get class indices
-                dme_labels_np = (
-                    dme_labels.numpy()
-                    if hasattr(dme_labels, 'numpy')
-                    else np.array(dme_labels)
-                )
-                dme_preds_np = (
-                    dme_preds.numpy()
-                    if hasattr(dme_preds, 'numpy')
-                    else np.array(dme_preds)
-                )
-                all_true.append(np.argmax(dme_labels_np, axis=-1))
-                all_pred.append(np.argmax(dme_preds_np, axis=-1))
-
-            # Concatenate all batches
-            y_true = np.concatenate(all_true, axis=0)
-            y_pred = np.concatenate(all_pred, axis=0)
-
-            # Compute QWK
-            qwk = compute_quadratic_weighted_kappa(y_true, y_pred, num_classes=self.num_classes)
-
-            # Persist history (history is an alias of qwk_history).
-            self.qwk_history.append(float(qwk))
-            if qwk > self.best_qwk:
-                self.best_qwk = qwk
-                self.best_epoch = epoch + 1
-
-            # Log it
-            logs['val_qwk'] = float(qwk)
-
-            unique_pred = np.unique(y_pred)
-            class_dist = np.bincount(y_true, minlength=self.num_classes)
-
-            if self.verbose:
-                logger.info(
-                    "Epoch %d: val_qwk=%.4f (best=%.4f @ epoch %d) | "
-                    "pred_classes=%s | class_dist=%s",
-                    epoch + 1, qwk, self.best_qwk, self.best_epoch,
-                    list(unique_pred), dict(enumerate(class_dist)),
-                )
+            """Compute QWK at end of epoch and log it.
+            
+            Handles both single-output and multi-output models correctly.
+            Includes robust error handling and validation.
+            """
+            logs = logs or {}
+            
+            try:
+                all_true = []
+                all_pred = []
+                
+                for batch_idx, batch_data in enumerate(self.val_dataset):
+                    try:
+                        # Handle tf.data format: (images, labels)
+                        if len(batch_data) == 2:
+                            images, batch_labels = batch_data
+                        else:
+                            logger.warning(f"Unexpected batch format at batch {batch_idx}: {type(batch_data)}")
+                            continue
+                        
+                        # Extract true labels - handle dict and tuple formats
+                        if isinstance(batch_labels, dict):
+                            # Multi-output model: dict of outputs
+                            dme_labels = batch_labels.get('dme_risk', batch_labels.get('dme_output'))
+                        elif isinstance(batch_labels, (tuple, list)):
+                            # Multi-output model: tuple of outputs (dr_output, dme_risk)
+                            dme_labels = batch_labels[1] if len(batch_labels) > 1 else batch_labels[0]
+                        else:
+                            # Single output
+                            dme_labels = batch_labels
+                        
+                        # Get predictions - handle dict and tuple formats
+                        predictions = self.model(images, training=False)
+                        
+                        if isinstance(predictions, dict):
+                            # Multi-output model: dict of predictions
+                            dme_preds = predictions.get('dme_risk', predictions.get('dme_output'))
+                        elif isinstance(predictions, (tuple, list)):
+                            # Multi-output model: tuple of predictions (dr_output, dme_risk)
+                            dme_preds = predictions[1] if len(predictions) > 1 else predictions[0]
+                        else:
+                            # Single output
+                            dme_preds = predictions
+                        
+                        # Validate before conversion
+                        if dme_labels is None or dme_preds is None:
+                            logger.warning(f"Batch {batch_idx}: labels or preds is None")
+                            continue
+                        
+                        # Convert to numpy and get class indices
+                        try:
+                            true_classes = np.argmax(dme_labels.numpy(), axis=-1)
+                        except (AttributeError, TypeError):
+                            # Already numpy or array-like
+                            true_classes = np.argmax(np.asarray(dme_labels), axis=-1)
+                        
+                        try:
+                            pred_classes = np.argmax(dme_preds.numpy(), axis=-1)
+                        except (AttributeError, TypeError):
+                            # Already numpy or array-like
+                            pred_classes = np.argmax(np.asarray(dme_preds), axis=-1)
+                        
+                        all_true.append(true_classes)
+                        all_pred.append(pred_classes)
+                        
+                    except Exception as e:
+                        logger.warning(f"Error processing batch {batch_idx}: {str(e)}")
+                        continue
+                
+                # Check if we collected any data
+                if not all_true or not all_pred:
+                    logger.warning(f"Epoch {epoch+1}: No valid predictions collected")
+                    logs['val_qwk'] = 0.0
+                    return
+                
+                # Concatenate all batches
+                y_true = np.concatenate(all_true, axis=0)
+                y_pred = np.concatenate(all_pred, axis=0)
+                
+                # Validate data
+                if len(y_true) == 0 or len(y_pred) == 0:
+                    logger.warning(f"Epoch {epoch+1}: Empty prediction arrays")
+                    logs['val_qwk'] = 0.0
+                    return
+                
+                # Compute QWK
+                qwk = compute_quadratic_weighted_kappa(y_true, y_pred, num_classes=self.num_classes)
+                
+                # Log it
+                logs['val_qwk'] = float(qwk)
+                
+                # Track history
+                self.qwk_history.append(float(qwk))
+                
+                # Update best QWK
+                if qwk > self.best_qwk:
+                    self.best_qwk = qwk
+                    self.best_epoch = epoch + 1
+                
+                # Diagnostic logging
+                unique_pred = np.unique(y_pred)
+                class_dist = np.bincount(y_true, minlength=self.num_classes)
+                
+                if self.verbose:
+                    logger.info(
+                        f"Epoch {epoch+1}: val_qwk={qwk:.4f} (best={self.best_qwk:.4f} @ epoch {self.best_epoch}) | "
+                        f"pred_classes={list(unique_pred)} | class_dist={dict(enumerate(class_dist))}"
+                    )
+                
+                # Save history to JSON
+                if self.history_path:
+                    history_data = {
+                        "qwk_history": self.qwk_history,
+                        "best_qwk": float(self.best_qwk),
+                        "best_epoch": self.best_epoch,
+                    }
+                    try:
+                        with open(self.history_path, 'w') as f:
+                            json.dump(history_data, f, indent=2)
+                    except Exception as e:
+                        logger.warning(f"Failed to save QWK history to {self.history_path}: {e}")
+            
+            except Exception as e:
+                logger.error(f"Critical error in QWK computation at epoch {epoch+1}: {e}", exc_info=True)
+                logs['val_qwk'] = 0.0
+            # if self.verbose:
+            #     logger.info("Epoch %d: val_qwk = %.4f (best=%.4f @ epoch %d)",
+            #                 epoch + 1, qwk, self.best_qwk, self.best_epoch)
 
         #this is batch processing to prevent memory leak issues with large validation sets. It computes QWK on the first 10 batches (40 samples) to get a quick estimate without overloading memory.
         # def on_epoch_end(self, epoch: int, logs=None):

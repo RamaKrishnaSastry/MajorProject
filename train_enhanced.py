@@ -86,7 +86,7 @@ def build_ordinal_weight_matrix(num_classes: int = NUM_DME_CLASSES) -> np.ndarra
     w = np.array(
         [
             [
-                1.0 + (i - j) ** 2 / max((num_classes - 1) ** 2, 1)
+                1 if i==j else (i - j) ** 2 / max((num_classes - 1) ** 2, 1)
                 for j in range(num_classes)
             ]
             for i in range(num_classes)
@@ -129,9 +129,11 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         for i in range(num_classes):
             row = []
             for j in range(num_classes):
-                distance = ((i - j) ** 2) / ((num_classes - 1) ** 2)
-                weight = 1.0 + distance
-                row.append(weight)
+                if i==j:
+                    distance = 1.0  # No penalty for correct class
+                else:
+                    distance = ((i - j) ** 2) / ((num_classes - 1) ** 2)
+                row.append(distance)
             matrix.append(row)
         return tf.constant(matrix, dtype=tf.float32)
 
