@@ -292,7 +292,7 @@ def _build_tf_dataset(
     # Convert DME labels to one-hot for 3-class classification
     labels_dme_oh = tf.keras.utils.to_categorical(dme_labels, num_classes=NUM_DME_CLASSES)
 
-    # DR labels: keep native 0-4 grade scale for ReLU regression head
+    # DR labels: keep native DR grades in [0, 4] (5 integer classes) for ReLU regression head
     labels_dr = dr_labels.astype(np.float32).reshape(-1, 1)
 
     # Dataset with both DR and DME labels
@@ -305,7 +305,7 @@ def _build_tf_dataset(
     def load_and_format(path, dr_label, dme_label):
         image = preprocess_fn(path)
         targets = {
-            'dr_output': dr_label,      # Shape: (1,) normalised float
+            'dr_output': dr_label,      # Shape: (1,) normalized float
             'dme_risk': dme_label,      # Shape: (3,) one-hot
         }
         return image, targets

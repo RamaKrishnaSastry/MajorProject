@@ -609,6 +609,8 @@ if _TF_AVAILABLE:
             Handles both single-output and multi-output models correctly.
             Includes robust error handling and validation.
             """
+            # Keep caller-provided dict object intact; do not replace empty {}
+            # with a new dict (important for Keras callback log propagation).
             if logs is None:
                 logs = {}
             
