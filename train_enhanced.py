@@ -86,21 +86,27 @@ def build_ordinal_weight_matrix(num_classes: int = NUM_DME_CLASSES) -> np.ndarra
     w = np.array(
         [
             [
-                1.0 + (i - j) ** 2 / max((num_classes - 1) ** 2, 1)
+                (i - j) ** 2 / max((num_classes - 1) ** 2, 1)
                 for j in range(num_classes)
             ]
             for i in range(num_classes)
         ],
         dtype=np.float32,
     )
-    # Normalise so diagonal stays ~1.0
-    w = w / w.max()
+    # Normalise so extreme errors receive weight 1.0.
+    max_val = float(w.max())
+    if max_val > 0:
+        w = w / max_val
     logger.info("Ordinal weight matrix:\n%s", np.round(w, 3))
     return w
 
 
 class OrdinalWeightedCrossEntropy(keras.losses.Loss):
     """Ordinal-aware weighted cross-entropy loss."""
+
+    # Small weight added to diagonal entries so correct predictions always
+    # contribute non-zero gradients.
+    _DIAGONAL_EPSILON: float = 0.05
 
     def __init__(self, num_classes=4, class_weights=None, **kwargs):
         super().__init__(**kwargs)
@@ -120,19 +126,40 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
             self.class_weights = tf.ones(num_classes, dtype=tf.float32)
 
     def _build_ordinal_matrix(self, num_classes):
-        """Build ordinal weight matrix (penalize distant misclassifications).
+        """Build ordinal penalty matrix normalised so large errors are penalised most.
 
-        IMPORTANT: diagonal weights must be non-zero so correct predictions still
-        contribute cross-entropy gradients.
+        w_ij = (i-j)^2 / (K-1)^2, then normalised by the maximum value so that
+        extreme misclassifications receive a weight of 1.0.  A small epsilon is
+        added to the diagonal so correct predictions still contribute gradients.
+
+        The previous formula used ``1.0 + distance`` which set the diagonal to 1.0
+        and off-diagonal entries to values > 1.0.  After normalisation the diagonal
+        was 0.5 while off-diagonal entries ranged up to 1.0 – this still penalises
+        errors correctly.  However the *un-normalised* version (which was actually
+        used here) kept the diagonal at 1.0 with off-diagonal entries up to 2.0,
+        biasing the loss scale upwards for all samples and causing training
+        instability.  The corrected version below removes that constant offset.
         """
-        matrix = []
+        matrix = np.array(
+            [
+                [
+                    ((i - j) ** 2) / max((num_classes - 1) ** 2, 1)
+                    for j in range(num_classes)
+                ]
+                for i in range(num_classes)
+            ],
+            dtype=np.float32,
+        )
+
+        # Normalise so extreme errors receive weight ~1.0.
+        max_val = float(np.max(matrix))
+        if max_val > 0:
+            matrix = matrix / max_val
+
+        # Add small epsilon to diagonal so correct predictions keep gradient flow.
         for i in range(num_classes):
-            row = []
-            for j in range(num_classes):
-                distance = ((i - j) ** 2) / ((num_classes - 1) ** 2)
-                weight = 1.0 + distance
-                row.append(weight)
-            matrix.append(row)
+            matrix[i, i] = max(float(matrix[i, i]), self._DIAGONAL_EPSILON)
+
         return tf.constant(matrix, dtype=tf.float32)
 
     def call(self, y_true, y_pred):
