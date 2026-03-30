@@ -60,6 +60,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "qwk_history_path": "qwk_history.json",
     # Ordinal loss weight matrix: larger penalty for distant class misclassification
     "ordinal_loss_weighting": True,
+    "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
 }
 
@@ -535,6 +536,7 @@ def build_enhanced_callbacks(
             num_classes=config["num_dme_classes"],
             history_path=config["qwk_history_path"],
             verbose=1,
+            max_batches=config.get("max_batches", None),
         ),
         # Save best model by QWK
         QWKModelCheckpoint(filepath=best_qwk_path, verbose=1),

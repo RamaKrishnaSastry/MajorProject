@@ -574,10 +574,10 @@ if _TF_AVAILABLE:
         Stores QWK history and triggers plateau detection for LR scheduling.
 
         .. note::
-            When ``max_batches`` is set (default 10), QWK is computed on only
-            the first ``max_batches`` validation batches.  This is an *estimate*
-            of the true validation QWK, but it prevents unbounded memory growth
-            on large validation sets (OOM on GPU/CPU).
+            By default (``max_batches=None``) QWK is computed on the **entire**
+            validation set, which gives an accurate metric.  Set
+            ``max_batches`` to a positive integer to limit evaluation to the
+            first N batches (useful on very large datasets to avoid OOM).
 
         Parameters
         ----------
@@ -591,8 +591,9 @@ if _TF_AVAILABLE:
             Verbosity level (0 = silent, 1 = per-epoch).
         max_batches : int or None
             Maximum number of validation batches to process per epoch.
-            Set to ``None`` to process the entire validation set (may cause
-            OOM on large datasets).  Defaults to 10.
+            Defaults to ``None`` (process the entire validation set).
+            Set to a positive integer to limit evaluation and bound memory
+            usage on very large datasets.
         """
 
         def __init__(
@@ -601,7 +602,7 @@ if _TF_AVAILABLE:
             num_classes: int = NUM_DME_CLASSES,
             history_path: str = "qwk_history.json",
             verbose: int = 1,
-            max_batches: Optional[int] = 10,
+            max_batches: Optional[int] = None,
         ):
             super().__init__()
             self.val_dataset = val_dataset
@@ -621,10 +622,10 @@ if _TF_AVAILABLE:
             Handles both single-output and multi-output models correctly.
             Includes robust error handling and validation.
 
-            When ``self.max_batches`` is not ``None``, only the first
-            ``max_batches`` batches are used to compute QWK.  This keeps
-            memory usage bounded and prevents OOM crashes on large validation
-            sets; the reported QWK is an approximation.
+            Processes the entire validation set by default (``max_batches=None``).
+            When ``self.max_batches`` is set to a positive integer, only the
+            first ``max_batches`` batches are used and the reported QWK is an
+            approximation.
             """
             # Keep caller-provided dict object intact; do not replace empty {}
             # with a new dict (important for Keras callback log propagation).

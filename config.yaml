@@ -24,6 +24,9 @@ batch_size: 8
 val_split: 0.20
 augment_train: true
 use_advanced_loader: true   # Use QWK-aware stratified loader
+max_batches: null           # null = process entire validation set for accurate QWK
+                            # Set to a positive integer to limit batches (useful to
+                            # avoid OOM on very large datasets)
 
 # Medical domain class weights
 medical_importance: true    # Severe/Moderate classes weighted higher
