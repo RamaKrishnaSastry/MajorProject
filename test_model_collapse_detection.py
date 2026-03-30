@@ -4,8 +4,8 @@ Verifies that:
 1. OrdinalWeightedCrossEntropy correctly penalises majority-class collapse
    (always predicting the same class should produce a higher loss than a
    diverse prediction that matches the true distribution).
-2. The off-diagonal ordinal weights are strictly greater than the diagonal
-   so misclassifications always receive more gradient than correct predictions.
+2. The ordinal matrix uses distance-only off-diagonal weights (0 < near < far)
+   while keeping a non-zero diagonal (1.0).
 3. With focal_loss_gamma > 0 the loss for high-confidence easy samples is
    reduced relative to hard/uncertain samples.
 4. The QWKCallback model-collapse warning fires when all predictions share
@@ -63,25 +63,24 @@ def test_collapse_loss_higher_than_diverse():
 
 
 # ---------------------------------------------------------------------------
-# Test 2: off-diagonal ordinal weights > diagonal
+# Test 2: ordinal matrix follows distance-only weighting
 # ---------------------------------------------------------------------------
 
-def test_ordinal_matrix_misclassification_weight_exceeds_diagonal():
-    """Every off-diagonal entry in the ordinal weight matrix must be strictly
-    greater than the diagonal (1.0) so misclassifications always get more
-    gradient than correct predictions."""
+def test_ordinal_matrix_distance_only_weights():
+    """Ordinal matrix should use distance-only off-diagonal weights and retain
+    a non-zero diagonal."""
     loss_fn = OrdinalWeightedCrossEntropy(num_classes=3)
     matrix = loss_fn.ordinal_matrix.numpy()
 
-    for i in range(3):
-        for j in range(3):
-            if i != j:
-                assert matrix[i, j] > matrix[i, i], (
-                    f"Off-diagonal weight ({i},{j})={matrix[i,j]:.4f} should be "
-                    f"> diagonal ({i},{i})={matrix[i,i]:.4f}."
-                )
+    expected = np.array(
+        [[1.0, 0.25, 1.0], [0.25, 1.0, 0.25], [1.0, 0.25, 1.0]],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(matrix, expected, rtol=1e-6, atol=1e-6)
+    assert np.all(np.diag(matrix) == 1.0), "Diagonal must stay non-zero (1.0)."
+    assert matrix[0, 1] < matrix[0, 2], "Near errors must be penalized less than far errors."
     print(
-        "PASS test_ordinal_matrix_misclassification_weight_exceeds_diagonal: "
+        "PASS test_ordinal_matrix_distance_only_weights: "
         f"matrix=\n{np.round(matrix, 3)}"
     )
 
@@ -201,7 +200,7 @@ def test_qwk_callback_no_warning_on_diverse_predictions():
 # ---------------------------------------------------------------------------
 
 def main():
-    test_ordinal_matrix_misclassification_weight_exceeds_diagonal()
+    test_ordinal_matrix_distance_only_weights()
     test_focal_loss_reduces_easy_sample_contribution()
     test_collapse_loss_higher_than_diverse()
     test_qwk_callback_warns_on_collapse()

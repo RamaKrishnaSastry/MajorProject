@@ -110,12 +110,9 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
     Combines three complementary mechanisms to address class imbalance and
     ordinal misclassification:
 
-    1. **Ordinal penalty matrix** – off-diagonal entries are ``1 + distance``
-       so any misclassification receives *more* gradient than a correct
-       prediction (diagonal = 1.0).  This prevents the old bug where
-       near-boundary errors (e.g. class 1 → 2, distance=0.25) produced a
-       weight *below* the correct-prediction weight and therefore reduced
-       the gradient for those errors.
+    1. **Ordinal penalty matrix** – off-diagonal entries are the normalised
+       class distance ``(i-j)^2 / (K-1)^2`` while the diagonal remains 1.0 to
+       keep a non-zero gradient for correct predictions.
 
     2. **Per-class weights** – scales the loss contribution of each true
        class to counteract frequency imbalance (minority classes get a higher
@@ -150,14 +147,13 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         """Build ordinal weight matrix (penalize distant misclassifications).
 
         Diagonal = 1.0 (correct predictions retain full CE gradient).
-        Off-diagonal = 1.0 + normalised_distance so every misclassification
-        gets *more* weight than a correct prediction; far misclassifications
-        get the most weight.
+        Off-diagonal = normalised_distance so far misclassifications receive
+        larger penalties than near-boundary misclassifications.
 
         For 3 classes this produces:
-            [[1.00, 1.25, 2.00],
-             [1.25, 1.00, 1.25],
-             [2.00, 1.25, 1.00]]
+            [[1.00, 0.25, 1.00],
+             [0.25, 1.00, 0.25],
+             [1.00, 0.25, 1.00]]
         """
         matrix = []
         for i in range(num_classes):
@@ -168,7 +164,7 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
                 else:
                     # num_classes >= 2 is assumed; (num_classes-1)^2 >= 1
                     distance = ((i - j) ** 2) / ((num_classes - 1) ** 2)
-                    weight = 1.0 + distance  # Misclassification: always > 1.0
+                    weight = distance
                 row.append(weight)
             matrix.append(row)
         return tf.constant(matrix, dtype=tf.float32)
