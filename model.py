@@ -19,6 +19,19 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
+@keras.utils.register_keras_serializable(package="MajorProject")
+class ResizeToMatch(layers.Layer):
+    """Resize the first tensor to match spatial size of a reference tensor."""
+
+    def call(self, inputs):
+        source, reference = inputs
+        target_hw = tf.shape(reference)[1:3]
+        return tf.image.resize(source, target_hw)
+
+    def get_config(self):
+        return super().get_config()
+
+
 # ---------------------------------------------------------------------------
 # Backbone
 # ---------------------------------------------------------------------------
@@ -137,10 +150,7 @@ def build_aspp(
     b4 = layers.Activation("relu", name=f"{name_prefix}_b4_relu")(b4)
     
     # Dynamically resize GAP branch to match current feature-map spatial size
-    b4 = layers.Lambda(
-        lambda t: tf.image.resize(t[0], tf.shape(t[1])[1:3]),
-        name=f"{name_prefix}_b4_resize",
-    )([b4, x])
+    b4 = ResizeToMatch(name=f"{name_prefix}_b4_resize")([b4, x])
 
     # Concatenate all branches
     out = layers.Concatenate(name=f"{name_prefix}_concat")([b0, b1, b2, b3, b4])

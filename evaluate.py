@@ -59,6 +59,20 @@ NUM_DR_CLASSES = len(DR_CLASS_NAMES)
 # Prediction helpers
 # ---------------------------------------------------------------------------
 
+def dr_regression_to_grade(
+    dr_pred: np.ndarray,
+    num_dr_classes: int = NUM_DR_CLASSES,
+) -> np.ndarray:
+    """Convert DR regression outputs to integer DR grades.
+
+    Applies ``round`` then clips to valid class range ``[0, num_dr_classes-1]``.
+    Works with scalar, vector, or ``(N, 1)`` array-like inputs.
+    """
+    grades = np.rint(np.asarray(dr_pred, dtype=np.float32))
+    grades = np.clip(grades, 0, num_dr_classes - 1)
+    return grades.astype(np.int32)
+
+
 def get_predictions(
     model: keras.Model,
     dataset: tf.data.Dataset,
