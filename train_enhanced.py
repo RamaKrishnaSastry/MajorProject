@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from argon2 import Parameters
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -170,8 +171,7 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         return tf.constant(matrix, dtype=tf.float32)
 
     def call(self, y_true, y_pred):
-        """Compute loss with ordinal + class weighting + focal scaling.
-
+        """Compute loss with ordinal + class weighting + focal loss.
         Parameters
         ----------
         y_true : tensor, shape (batch, num_classes)
@@ -179,34 +179,45 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         y_pred : tensor, shape (batch, num_classes)
             Predicted class probabilities.
         """
-        # Standard cross-entropy per sample
+        # Clip predictions to [1e-7, 1.0 - 1e-7] to avoid log(0)
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
+        
+        # Standard cross-entropy
         ce_loss = keras.losses.categorical_crossentropy(y_true, y_pred)
-
-        # Focal loss scaling: down-weight easy samples (high p_t)
-        if self.focal_loss_gamma > 0:
-            # p_t = predicted probability for the true class
-            p_t = tf.reduce_sum(y_true * y_pred, axis=-1)
-            p_t = tf.clip_by_value(p_t, 1e-7, 1.0)
-            focal_factor = tf.pow(1.0 - p_t, self.focal_loss_gamma)
-            ce_loss = focal_factor * ce_loss
-
-        # Get true / predicted class indices
+        
+        # Get true class indices
         y_true_class = tf.argmax(y_true, axis=1)  # (batch,)
         y_pred_class = tf.argmax(y_pred, axis=1)  # (batch,)
-
-        # Ordinal penalty: misclassifications get weight > 1.0
+        
+        # Apply ordinal weighting
         ordinal_weights = tf.gather_nd(
             self.ordinal_matrix,
             tf.stack([y_true_class, y_pred_class], axis=1)
         )  # (batch,)
-
-        # Per-class imbalance correction
+        
+        # Apply class weights
         class_weights_per_sample = tf.gather(self.class_weights, y_true_class)  # (batch,)
-
-        # Combine all weights and apply
+        
+        # ✅ FIX: Focal loss should REDUCE loss for CORRECT predictions
+        # when model is confident, NOT punish it
+        if self.focal_loss_gamma > 0:
+            # p_t = probability of true class
+            p_t = tf.reduce_sum(y_true * y_pred, axis=-1)
+            # focal_factor = (1 - p_t)^gamma: high when model is WRONG, low when RIGHT
+            focal_factor = tf.pow(1.0 - p_t, self.focal_loss_gamma)
+            ce_loss = focal_factor * ce_loss
+        
+        # Combine all weights
         total_weights = ordinal_weights * class_weights_per_sample
-        weighted_loss = ce_loss * total_weights
-
+        
+        # ✅ NEW: Add entropy regularization to prevent collapse
+        # Encourages model to output diverse probabilities
+        entropy = -tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-7), axis=-1)
+        entropy_weight = 0.1 * self.focal_loss_gamma  # Scale with focal loss intensity
+        
+        # Weighted loss
+        weighted_loss = ce_loss * total_weights + entropy_weight * entropy
+        
         return tf.reduce_mean(weighted_loss)
 
     def get_config(self):
