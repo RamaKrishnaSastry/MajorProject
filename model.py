@@ -197,7 +197,7 @@ def build_dr_head(x: tf.Tensor) -> tf.Tensor:
     """
     x = layers.GlobalAveragePooling2D(name="dr_gap")(x)
     x = layers.Dense(256, activation="relu", name="dr_fc1")(x)
-    x = layers.Dropout(0.4, name="dr_dropout")(x)
+    x = layers.Dropout(0.5, name="dr_dropout")(x)
     x = layers.Dense(1, activation="relu", name="dr_output")(x)
     return x
 
@@ -223,7 +223,7 @@ def build_dme_head(x: tf.Tensor, num_classes: int = 3) -> tf.Tensor:
     """
     x = layers.GlobalAveragePooling2D(name="dme_gap")(x)
     x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(0.4, name="dme_dropout")(x)
+    x = layers.Dropout(0.5, name="dme_dropout")(x)
     x = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
     return x
 

@@ -63,7 +63,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "ordinal_loss_weighting": True,
     # Focal loss gamma: 0 = standard CE, 2.0 = standard focal loss.
     # Higher gamma reduces gradient for easy majority-class samples.
-    "focal_loss_gamma": 0.5,
+    "focal_loss_gamma": 2.0,
     "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
 }
@@ -126,7 +126,7 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
        to minority classes.
     """
 
-    def __init__(self, num_classes=3, class_weights=None, focal_loss_gamma=0.5, **kwargs):
+    def __init__(self, num_classes=3, class_weights=None, focal_loss_gamma=2.0, **kwargs):
         super().__init__(**kwargs)
         self.num_classes = num_classes
         self.focal_loss_gamma = focal_loss_gamma
@@ -213,7 +213,7 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         # ✅ NEW: Add entropy regularization to prevent collapse
         # Encourages model to output diverse probabilities
         entropy = -tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-7), axis=-1)
-        entropy_weight = 0.1 * self.focal_loss_gamma  # Scale with focal loss intensity
+        entropy_weight = entropy_weight = 0.05   # fixed constant, independent of gamma
         
         # Weighted loss
         weighted_loss = ce_loss * total_weights + entropy_weight * entropy
@@ -582,12 +582,14 @@ def compile_model_enhanced(
     num_dme_classes: int = 3,
     class_weights: Optional[Dict[int, float]] = None,
     ordinal_loss_weighting: bool = True,
-    focal_loss_gamma: float = 0.5,
+    focal_loss_gamma: float = 2.0,
 ) -> keras.Model:
     """Compile with ordinal + class weighting baked into loss."""
     
-    optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
-
+    optimizer = keras.optimizers.Adam(
+        learning_rate=learning_rate,
+        clipnorm=1.0
+    )
     if ordinal_loss_weighting:
         dme_loss = OrdinalWeightedCrossEntropy(
             num_classes=num_dme_classes,
@@ -608,7 +610,7 @@ def compile_model_enhanced(
             "dme_risk": dme_loss,
         },
         loss_weights={
-            "dr_output": 0.3,   # DR regression contributes to joint training
+            "dr_output": 0.05,   # DR regression contributes to joint training
             "dme_risk": 1.0,
         },
         metrics={
@@ -803,7 +805,7 @@ def train_enhanced(
         num_dme_classes=cfg["num_dme_classes"],
         class_weights=class_weights,
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
-        focal_loss_gamma=cfg.get("focal_loss_gamma", 0.5),
+        focal_loss_gamma=cfg.get("focal_loss_gamma", 2.0),
     )
 
     callbacks = build_enhanced_callbacks(val_ds, cfg)

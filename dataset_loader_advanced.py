@@ -52,8 +52,8 @@ except ImportError:
 # Clinical importance weights – rarer/more severe classes get extra emphasis
 MEDICAL_IMPORTANCE_WEIGHTS = {
     0: 1.0,   # No DME   – baseline
-    1: 1.2,   # Mild     – early detection important
-    2: 1.5,   # Moderate – treatment decision boundary
+    1: 4.0,   # Mild     – early detection important
+    2: 0.8,   # Moderate – treatment decision boundary
 }
 
 
@@ -109,7 +109,7 @@ def compute_ordinal_class_weights(
         # +10% for class 0 (No DME) to distinguish it from Mild
         # +30% for the severe class (highest ordinal) to emphasise rare severe cases
         class_weights[0] *= 1.1
-        class_weights[num_classes - 1] *= 1.3
+        class_weights[1] *= 2.0
 
     # Normalise so mean weight = 1.0
     mean_w = np.mean(list(class_weights.values()))
@@ -329,6 +329,18 @@ def plot_dataset_balance(
 # ---------------------------------------------------------------------------
 # Advanced dataset builder
 # ---------------------------------------------------------------------------
+def oversample_minority_class(paths, dme_labels, dr_labels, minority_class=1, factor=3):
+    """Repeat minority class samples to reduce imbalance."""
+    mask = (dme_labels == minority_class)
+    extra_paths  = np.tile(paths[mask],     factor - 1)
+    extra_dme    = np.tile(dme_labels[mask], factor - 1)
+    extra_dr     = np.tile(dr_labels[mask],  factor - 1)
+    return (
+        np.concatenate([paths,      extra_paths]),
+        np.concatenate([dme_labels, extra_dme]),
+        np.concatenate([dr_labels,  extra_dr]),
+    )
+
 
 def build_datasets_advanced(
     csv_path: str,
@@ -426,6 +438,16 @@ def build_datasets_advanced(
         clip_limit=clip_limit,
         grid_size=grid_size,
     )
+
+    # After the split, before building train_ds:
+    train_paths, train_dme, train_dr = oversample_minority_class(
+        train_paths, train_dme, train_dr, minority_class=1, factor=3
+    )
+    logger.info(
+        "After oversampling class 1 ×3: %s",
+        {i: int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)}
+    )
+    # Expected output: {0: 141, 1: 99, 2: 156}  ← class 1 now competitive
 
     train_ds = _build_tf_dataset(
         train_paths, train_dme, train_dr, preprocess_fn,

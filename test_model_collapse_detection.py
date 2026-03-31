@@ -37,7 +37,7 @@ def test_collapse_loss_higher_than_diverse():
     loss_fn = OrdinalWeightedCrossEntropy(
         num_classes=3,
         class_weights=class_weights,
-        focal_loss_gamma=0.5,
+        focal_loss_gamma=2.0,
     )
 
     # Simulated validation batch: balanced ground truth
@@ -90,13 +90,13 @@ def test_ordinal_matrix_distance_only_weights():
 # ---------------------------------------------------------------------------
 
 def test_focal_loss_reduces_easy_sample_contribution():
-    """With focal_loss_gamma=0.5, the loss for a highly confident correct
+    """With focal_loss_gamma=2.0, the loss for a highly confident correct
     prediction should be lower than without focal loss (gamma=0)."""
     # Confident correct prediction (class 0 with prob 0.99)
     y_true = _make_one_hot([0], num_classes=3)
     y_pred_confident = tf.constant([[0.99, 0.005, 0.005]])
 
-    loss_focal = OrdinalWeightedCrossEntropy(num_classes=3, focal_loss_gamma=0.5)
+    loss_focal = OrdinalWeightedCrossEntropy(num_classes=3, focal_loss_gamma=2.0)
     loss_no_focal = OrdinalWeightedCrossEntropy(num_classes=3, focal_loss_gamma=0.0)
 
     val_focal = float(loss_focal(y_true, y_pred_confident).numpy())
