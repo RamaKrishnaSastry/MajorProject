@@ -43,14 +43,14 @@ grid_size: 8
 # STAGE 1: INITIAL TRAINING
 # ============================================================
 stage1:
-  epochs: 30
-  learning_rate: 2.0e-4
+  epochs: 50
+  learning_rate: 5.0e-5
   early_stopping_patience: 5
   lr_reduce_patience: 3
   lr_reduce_factor: 0.5
   min_lr: 1.0e-7
   ordinal_loss_weighting: true  # Recommended for class imbalance + ordinal errors
-  focal_loss_gamma: 0.5         # >0 applies focal loss (down-weights easy majority-class samples)
+  focal_loss_gamma: 2.0         # >0 applies focal loss (down-weights easy majority-class samples)
 
 # ============================================================
 # STAGE 2: FINE-TUNING
@@ -63,7 +63,7 @@ stage2:
   lr_reduce_factor: 0.3
   min_lr: 1.0e-8
   ordinal_loss_weighting: true  # Keep enabled for stable minority-class learning
-  focal_loss_gamma: 0.5         # Keep focal loss active during fine-tuning
+  focal_loss_gamma: 2.0         # Keep focal loss active during fine-tuning
 
 # ============================================================
 # MODEL ARCHITECTURE

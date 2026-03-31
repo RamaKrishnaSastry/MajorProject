@@ -255,6 +255,7 @@ def stage_training(
         "lr_reduce_factor": stage_cfg.get("lr_reduce_factor", 0.5),
         "min_lr": stage_cfg.get("min_lr", 1e-7),
         "ordinal_loss_weighting": stage_cfg.get("ordinal_loss_weighting", True),
+        "focal_loss_gamma": stage_cfg.get("focal_loss_gamma", 2.0),
         "max_batches": config.get("max_batches", None),
         "checkpoint_dir": checkpoint_dir,
         "history_path": os.path.join(config["output_dir"], f"history_{stage_name}.json"),
