@@ -126,7 +126,7 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
        to minority classes.
     """
 
-    def __init__(self, num_classes=3, class_weights=None, focal_loss_gamma=2.0, **kwargs):
+    def __init__(self, num_classes=3, class_weights=None, focal_loss_gamma=0.5, **kwargs):
         super().__init__(**kwargs)
         self.num_classes = num_classes
         self.focal_loss_gamma = focal_loss_gamma
