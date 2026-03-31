@@ -63,7 +63,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "ordinal_loss_weighting": True,
     # Focal loss gamma: 0 = standard CE, 2.0 = standard focal loss.
     # Higher gamma reduces gradient for easy majority-class samples.
-    "focal_loss_gamma": 2.0,
+    "focal_loss_gamma": 0.5,
     "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
 }
@@ -582,7 +582,7 @@ def compile_model_enhanced(
     num_dme_classes: int = 3,
     class_weights: Optional[Dict[int, float]] = None,
     ordinal_loss_weighting: bool = True,
-    focal_loss_gamma: float = 2.0,
+    focal_loss_gamma: float = 0.5,
 ) -> keras.Model:
     """Compile with ordinal + class weighting baked into loss."""
     
@@ -803,7 +803,7 @@ def train_enhanced(
         num_dme_classes=cfg["num_dme_classes"],
         class_weights=class_weights,
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
-        focal_loss_gamma=cfg.get("focal_loss_gamma", 2.0),
+        focal_loss_gamma=cfg.get("focal_loss_gamma", 0.5),
     )
 
     callbacks = build_enhanced_callbacks(val_ds, cfg)
