@@ -739,33 +739,42 @@ def train_enhanced(
         )
 
         if eyepacs_backbone is not None:
+            model.load_weights(eyepacs_backbone, skip_mismatch=True)
+            logger.info("Loaded EyePACS backbone weights from '%s'.", eyepacs_backbone)
+
+        if pretrained_weights is None:
+            # Stage 1 only: freeze backbone and initialize DME bias
             try:
                 backbone_layer = model.get_layer("resnet50_conv4_backbone")
-                backbone_layer.load_weights(eyepacs_backbone)
-                logger.info("✅ EyePACS backbone loaded from '%s'.", eyepacs_backbone)
+                backbone_layer.trainable = False
+                trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
+                logger.info("✅ Backbone FROZEN. Trainable params: %d (~ASPP + heads only)", trainable_count)
             except Exception as e:
-                logger.warning("Could not load EyePACS backbone: %s. Using ImageNet.", e)
-        elif pretrained_weights is not None:
+                logger.warning("Could not freeze backbone: %s", e)
+
+            try:
+                dme_head = model.get_layer("dme_risk")
+                class_counts = np.array([141, 33, 156], dtype=np.float32)
+                class_probs = class_counts / class_counts.sum()
+                log_probs = np.log(class_probs + 1e-7)
+                w = dme_head.get_weights()
+                if len(w) >= 2:
+                    w[1] = log_probs
+                    dme_head.set_weights(w)
+                    logger.info("✅ DME head bias initialized: %s", np.round(log_probs, 3))
+            except Exception as e:
+                logger.warning("Could not initialize DME bias: %s", e)
+
+        else:
+            # Stage 2: load Stage 1 weights and unfreeze backbone for full fine-tuning
             model.load_weights(pretrained_weights, skip_mismatch=True)
-
-        # Freeze backbone after building
-        backbone_layer = model.get_layer("resnet50_conv4_backbone")
-        backbone_layer.trainable = False
-        trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
-        logger.info("✅ Backbone FROZEN. Trainable params: %d (~ASPP + heads only)", trainable_count)
-
-        # Initialize DME head bias to log class frequencies — prevents cold-start collapse
-        try:
-            dme_head = model.get_layer("dme_risk")
-            class_counts = np.array([141, 33, 156], dtype=np.float32)
-            class_probs = class_counts / class_counts.sum()
-            log_probs = np.log(class_probs + 1e-7)
-            w = dme_head.get_weights()
-            w[1] = log_probs  # w[0]=kernel, w[1]=bias
-            dme_head.set_weights(w)
-            logger.info("✅ DME head bias initialized: %s", np.round(log_probs, 3))
-        except Exception as e:
-            logger.warning("Could not initialize DME bias: %s", e)
+            try:
+                backbone_layer = model.get_layer("resnet50_conv4_backbone")
+                backbone_layer.trainable = True
+                trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
+                logger.info("✅ Stage 2: Backbone UNFROZEN. Trainable params: %d", trainable_count)
+            except Exception as e:
+                logger.warning("Could not unfreeze backbone for Stage 2: %s", e)
 
     model = compile_model_enhanced(
         model,
