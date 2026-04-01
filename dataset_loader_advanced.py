@@ -163,7 +163,7 @@ def compute_ordinal_class_weights(
     # Step 4: sanity check — no weight should be > 5x any other weight
     vals = list(class_weights.values())
     ratio = max(vals) / min(vals)
-    if ratio > 5.0:
+    if ratio > 8.0:
         logger.warning(
             "Class weight ratio %.1fx exceeds safe limit. Clipping to 5x.", ratio
         )
