@@ -743,7 +743,6 @@ def train_enhanced(
     """
 
     cfg = {**DEFAULT_ENHANCED_CONFIG, **(config or {})}
-
     logger.info("Building enhanced model …")
 
     if use_dme_tuning:
@@ -755,27 +754,36 @@ def train_enhanced(
             backbone_weights_path=backbone_weights_path,
         )
     else:
-        logger.info("Stage 1: Full model training (all layers trainable)")
-        # Use EyePACS-pretrained backbone weights when provided, otherwise ImageNet
+        logger.info("Stage 1: Backbone frozen, training ASPP + heads only")
         if eyepacs_backbone is not None:
-            backbone_weights = None  # Skip ImageNet; EyePACS weights loaded below
+            backbone_weights = None
             logger.info("EyePACS backbone weights will be loaded from '%s'.", eyepacs_backbone)
         else:
             backbone_weights = "imagenet"
+
         model = build_model(
             input_shape=tuple(cfg["input_shape"]),
             backbone_weights=backbone_weights,
             num_dme_classes=cfg["num_dme_classes"],
             trainable=True,
-            # EyePACS weights take priority; custom backbone path only used
-            # when no EyePACS weights are provided.
             backbone_weights_path=None if eyepacs_backbone is not None else backbone_weights_path,
         )
+
         if eyepacs_backbone is not None:
-            model.load_weights(eyepacs_backbone, skip_mismatch=True)
-            logger.info("Loaded EyePACS backbone weights from '%s'.", eyepacs_backbone)
+            try:
+                backbone_layer = model.get_layer("resnet50_conv4_backbone")
+                backbone_layer.load_weights(eyepacs_backbone)
+                logger.info("✅ EyePACS backbone loaded from '%s'.", eyepacs_backbone)
+            except Exception as e:
+                logger.warning("Could not load EyePACS backbone: %s. Using ImageNet.", e)
         elif pretrained_weights is not None:
             model.load_weights(pretrained_weights, skip_mismatch=True)
+
+        # ✅ FREEZE BACKBONE — must happen AFTER model is built
+        backbone_layer = model.get_layer("resnet50_conv4_backbone")
+        backbone_layer.trainable = False
+        trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
+        logger.info("✅ Backbone FROZEN. Trainable params: %d (~ASPP + heads only)", trainable_count)
 
     model = compile_model_enhanced(
         model,
@@ -792,12 +800,8 @@ def train_enhanced(
         "Starting training: epochs=%d, batch_size=%d, dme_tuning=%s",
         cfg["epochs"], cfg["batch_size"], use_dme_tuning,
     )
-    log_dataset_class_distribution(
-        train_ds, "Train", num_classes=cfg["num_dme_classes"], max_batches=20
-    )
-    log_dataset_class_distribution(
-        val_ds, "Val", num_classes=cfg["num_dme_classes"], max_batches=20
-    )
+    log_dataset_class_distribution(train_ds, "Train", num_classes=cfg["num_dme_classes"], max_batches=20)
+    log_dataset_class_distribution(val_ds, "Val", num_classes=cfg["num_dme_classes"], max_batches=20)
 
     history = model.fit(
         train_ds,
