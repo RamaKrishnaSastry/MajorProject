@@ -45,8 +45,8 @@ grid_size: 8
 stage1:
   epochs: 20
   learning_rate: 1.0e-4
-  early_stopping_patience: 5
-  lr_reduce_patience: 3
+  early_stopping_patience: 10
+  lr_reduce_patience: 5
   lr_reduce_factor: 0.5
   min_lr: 1.0e-7
   ordinal_loss_weighting: true  # Recommended for class imbalance + ordinal errors
@@ -58,7 +58,7 @@ stage1:
 stage2:
   epochs: 30
   learning_rate: 3.0e-5    # Lower LR for fine-tuning
-  early_stopping_patience: 5
+  early_stopping_patience: 15
   lr_reduce_patience: 3
   lr_reduce_factor: 0.3
   min_lr: 1.0e-8
