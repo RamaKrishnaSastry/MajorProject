@@ -145,79 +145,57 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
             self.class_weights = tf.ones(num_classes, dtype=tf.float32)
 
     def _build_ordinal_matrix(self, num_classes):
-        """Build ordinal weight matrix (penalize distant misclassifications).
-
-        Diagonal = 1.0 (correct predictions retain full CE gradient).
-        Off-diagonal = normalised_distance so far misclassifications receive
-        larger penalties than near-boundary misclassifications.
-
-        For 3 classes this produces:
-            [[1.00, 0.25, 1.00],
-             [0.25, 1.00, 0.25],
-             [1.00, 0.25, 1.00]]
+        """Ordinal penalty matrix: correct=1.0, adjacent error=1.25, far error=2.0.
+        Higher values = model is penalized MORE for that prediction.
+        This ensures the model prefers adjacent errors over distant errors,
+        and prefers correct predictions over any error.
+        
+        This gives:
+            [[1.00, 1.25, 2.00],
+            [1.25, 1.00, 1.25],
+            [2.00, 1.25, 1.00]]
         """
         matrix = []
         for i in range(num_classes):
             row = []
             for j in range(num_classes):
                 if i == j:
-                    weight = 1.0  # Correct prediction: base weight
+                    weight = 1.0  # correct prediction: baseline penalty
                 else:
-                    # num_classes >= 2 is assumed; (num_classes-1)^2 >= 1
                     distance = ((i - j) ** 2) / ((num_classes - 1) ** 2)
-                    weight = distance
+                    weight = 1.0 + distance  # adjacent=1.25, far=2.0
                 row.append(weight)
             matrix.append(row)
         return tf.constant(matrix, dtype=tf.float32)
 
     def call(self, y_true, y_pred):
-        """Compute loss with ordinal + class weighting + focal loss.
-        Parameters
-        ----------
-        y_true : tensor, shape (batch, num_classes)
-            One-hot encoded true labels.
-        y_pred : tensor, shape (batch, num_classes)
-            Predicted class probabilities.
-        """
-        # Clip predictions to [1e-7, 1.0 - 1e-7] to avoid log(0)
         y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
-        
-        # Standard cross-entropy
-        ce_loss = keras.losses.categorical_crossentropy(y_true, y_pred)
-        
-        # Get true class indices
-        y_true_class = tf.argmax(y_true, axis=1)  # (batch,)
-        y_pred_class = tf.argmax(y_pred, axis=1)  # (batch,)
-        
-        # Apply ordinal weighting
+
+        # Label smoothing: prevents the model from being overconfident on one class
+        smoothing = 0.1
+        num_cls = tf.cast(tf.shape(y_true)[-1], tf.float32)
+        y_true_smooth = y_true * (1.0 - smoothing) + (smoothing / num_cls)
+
+        # Cross-entropy on smoothed labels
+        ce_loss = -tf.reduce_sum(y_true_smooth * tf.math.log(y_pred), axis=-1)
+
+        # Focal modulation: down-weight easy correct predictions
+        if self.focal_loss_gamma > 0:
+            p_t = tf.reduce_sum(y_true * y_pred, axis=-1)
+            focal_factor = tf.pow(1.0 - p_t, self.focal_loss_gamma)
+            ce_loss = focal_factor * ce_loss
+
+        # Ordinal + class weights
+        y_true_class = tf.argmax(y_true, axis=1)
+        y_pred_class = tf.argmax(y_pred, axis=1)
         ordinal_weights = tf.gather_nd(
             self.ordinal_matrix,
             tf.stack([y_true_class, y_pred_class], axis=1)
-        )  # (batch,)
-        
-        # Apply class weights
-        class_weights_per_sample = tf.gather(self.class_weights, y_true_class)  # (batch,)
-        
-        # ✅ FIX: Focal loss should REDUCE loss for CORRECT predictions
-        # when model is confident, NOT punish it
-        if self.focal_loss_gamma > 0:
-            # p_t = probability of true class
-            p_t = tf.reduce_sum(y_true * y_pred, axis=-1)
-            # focal_factor = (1 - p_t)^gamma: high when model is WRONG, low when RIGHT
-            focal_factor = tf.pow(1.0 - p_t, self.focal_loss_gamma)
-            ce_loss = focal_factor * ce_loss
-        
-        # Combine all weights
-        total_weights = ordinal_weights * class_weights_per_sample
-        
-        # ✅ NEW: Add entropy regularization to prevent collapse
-        # Encourages model to output diverse probabilities
-        entropy = -tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-7), axis=-1)
-        entropy_weight = entropy_weight = 0.05   # fixed constant, independent of gamma
-        
-        # Weighted loss
-        weighted_loss = ce_loss * total_weights + entropy_weight * entropy
-        
+        )
+        class_weights_per_sample = tf.gather(self.class_weights, y_true_class)
+
+        # NO entropy term — it was causing soft single-class collapse
+        weighted_loss = ce_loss * ordinal_weights * class_weights_per_sample
         return tf.reduce_mean(weighted_loss)
 
     def get_config(self):
