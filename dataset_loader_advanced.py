@@ -497,13 +497,13 @@ def build_datasets_advanced(
     )
 
     # After the split, before building train_ds:
-    train_paths, train_dme, train_dr = oversample_minority_class(
-        train_paths, train_dme, train_dr, minority_class=1, factor=2
-    )
-    logger.info(
-        "After oversampling class 1 ×3: %s",
-        {i: int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)}
-    )
+    # train_paths, train_dme, train_dr = oversample_minority_class(
+    #     train_paths, train_dme, train_dr, minority_class=1, factor=2
+    # )
+    # logger.info(
+    #     "After oversampling class 1 ×3: %s",
+    #     {i: int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)}
+    # )
     # Expected output: {0: 141, 1: 99, 2: 156}  ← class 1 now competitive
 
     train_ds = _build_tf_dataset(

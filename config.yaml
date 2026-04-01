@@ -44,7 +44,7 @@ grid_size: 8
 # ============================================================
 stage1:
   epochs: 50
-  learning_rate: 5.0e-5
+  learning_rate: 1.0e-4
   early_stopping_patience: 5
   lr_reduce_patience: 3
   lr_reduce_factor: 0.5
