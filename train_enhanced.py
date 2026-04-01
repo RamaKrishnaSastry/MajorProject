@@ -739,8 +739,13 @@ def train_enhanced(
         )
 
         if eyepacs_backbone is not None:
-            model.load_weights(eyepacs_backbone, skip_mismatch=True)
-            logger.info("Loaded EyePACS backbone weights from '%s'.", eyepacs_backbone)
+            # EyePACS artifact stores backbone weights, so load directly into backbone.
+            try:
+                backbone_layer = model.get_layer("resnet50_conv4_backbone")
+                backbone_layer.load_weights(eyepacs_backbone, skip_mismatch=True)
+                logger.info("Loaded EyePACS backbone weights into backbone from '%s'.", eyepacs_backbone)
+            except Exception as e:
+                logger.warning("Could not load EyePACS backbone weights '%s': %s", eyepacs_backbone, e)
 
         if pretrained_weights is None:
             # Stage 1 only: freeze backbone and initialize DME bias
