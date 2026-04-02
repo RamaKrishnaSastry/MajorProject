@@ -41,30 +41,29 @@ def crop_black_borders(image: np.ndarray, border_fraction: float = 0.10) -> np.n
 
 
 def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, grid_size: int = 8) -> np.ndarray:
-    """Apply CLAHE to each channel of an RGB image independently.
-
-    CLAHE (Contrast Limited Adaptive Histogram Equalization) enhances local
-    contrast and is particularly effective for retinal fundus images.
-
-    Parameters
-    ----------
-    image : np.ndarray
-        RGB image array of shape (H, W, 3), dtype uint8.
-    clip_limit : float
-        Threshold for contrast limiting.
-    grid_size : int
-        Size of the grid for histogram equalization.
-
-    Returns
-    -------
-    np.ndarray
-        CLAHE-enhanced image, same shape and dtype as input.
+    """Apply CLAHE to the GREEN channel only.
+    
+    Per the DR-ASPP-DRN paper: the green channel provides the best vessel
+    contrast for retinal fundus images and is enhanced using CLAHE.
     """
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(grid_size, grid_size))
-    channels = cv2.split(image)
-    enhanced = [clahe.apply(c) for c in channels]
-    return cv2.merge(enhanced)
+    # Extract green channel (index 1) — best contrast for retinal vessels
+    green = image[:, :, 1]
+    enhanced_green = clahe.apply(green)
+    result = image.copy()
+    result[:, :, 1] = enhanced_green  # replace only green channel
+    return result
 
+
+def normalize_image(image: np.ndarray) -> np.ndarray:
+    """Normalize to [-1, 1] to match ResNet50 preprocess_input expectations.
+    
+    ResNet50 with ImageNet or EyePACS weights expects input in [-1, 1].
+    Using /255 → [0,1] causes the backbone features to activate incorrectly.
+    """
+    image = image.astype(np.float32)
+    image = image / 127.5 - 1.0  # maps [0, 255] → [-1, 1]
+    return image
 
 def resize_image(image: np.ndarray, target_size: tuple = (512, 512)) -> np.ndarray:
     """Resize image to *target_size* using bicubic interpolation.
@@ -84,20 +83,20 @@ def resize_image(image: np.ndarray, target_size: tuple = (512, 512)) -> np.ndarr
     return cv2.resize(image, target_size, interpolation=cv2.INTER_CUBIC)
 
 
-def normalize_image(image: np.ndarray) -> np.ndarray:
-    """Normalize pixel values to the [0, 1] range.
+# def normalize_image(image: np.ndarray) -> np.ndarray:
+#     """Normalize pixel values to the [0, 1] range.
 
-    Parameters
-    ----------
-    image : np.ndarray
-        Image array with values in [0, 255].
+#     Parameters
+#     ----------
+#     image : np.ndarray
+#         Image array with values in [0, 255].
 
-    Returns
-    -------
-    np.ndarray
-        Float32 array with values in [0, 1].
-    """
-    return image.astype(np.float32) / 255.0
+#     Returns
+#     -------
+#     np.ndarray
+#         Float32 array with values in [0, 1].
+#     """
+#     return image.astype(np.float32) / 255.0
 
 
 def preprocess_image(
