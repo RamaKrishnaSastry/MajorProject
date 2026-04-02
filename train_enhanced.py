@@ -639,6 +639,21 @@ def compile_model_enhanced(
 # Callbacks builder
 # ---------------------------------------------------------------------------
 
+class LinearWarmupCallback(keras.callbacks.Callback):
+    """Warm up LR linearly over first N epochs to prevent epoch-1 collapse."""
+    def __init__(self, target_lr: float, warmup_epochs: int = 5):
+        super().__init__()
+        self.target_lr = target_lr
+        self.warmup_epochs = warmup_epochs
+
+    def on_epoch_begin(self, epoch, logs=None):
+        if epoch < self.warmup_epochs:
+            lr = self.target_lr * (epoch + 1) / self.warmup_epochs
+            self.model.optimizer.learning_rate = lr
+            logger.info("Warmup epoch %d/%d: lr=%.2e", epoch+1, self.warmup_epochs, lr)
+        elif epoch == self.warmup_epochs:
+            self.model.optimizer.learning_rate = self.target_lr
+
 def build_enhanced_callbacks(
     val_dataset: tf.data.Dataset,
     config: Dict,
@@ -661,6 +676,7 @@ def build_enhanced_callbacks(
     best_qwk_path = os.path.join(config["checkpoint_dir"], "best_qwk.weights.h5")
 
     callbacks = [
+        LinearWarmupCallback(target_lr=config["learning_rate"], warmup_epochs=5),
         # QWK tracking callback (must run first to populate val_qwk in logs)
         QWKCallback(
             val_dataset=val_dataset,

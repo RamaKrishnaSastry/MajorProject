@@ -264,7 +264,7 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
     image = tf.image.random_flip_up_down(image)
     image = tf.image.random_brightness(image, max_delta=0.1)
     image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-    image = tf.clip_by_value(image, 0.0, 1.0)
+    image = tf.clip_by_value(image, -1.0, 1.0)
     return image
 
 
