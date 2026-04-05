@@ -57,12 +57,6 @@ MEDICAL_IMPORTANCE_WEIGHTS = {
 }
 
 
-MEDICAL_IMPORTANCE_WEIGHTS = {
-    0: 1.0,
-    1: 2.0,   # was 4.0 — too aggressive with oversampling already helping class 1
-    2: 1.0,   # was 0.8
-}
-
 def compute_ordinal_class_weights(
     labels: np.ndarray,
     num_classes: int = NUM_DME_CLASSES,
@@ -416,6 +410,7 @@ def build_datasets_advanced(
     output_dir: str = ".",
     save_split_info: bool = True,
     save_balance_plot: bool = True,
+    messidor_dir: Optional[str] = None,
 ) -> Tuple[tf.data.Dataset, tf.data.Dataset, Dict[int, float], Dict]:
     """Build QWK-aware train/val tf.data datasets.
 
@@ -453,6 +448,8 @@ def build_datasets_advanced(
         Save split statistics to JSON.
     save_balance_plot : bool
         Save dataset balance visualisation.
+    messidor_dir : str, optional
+        Optional path to a MESSIDOR directory to merge into the dataset.
 
     Returns
     -------
@@ -465,6 +462,12 @@ def build_datasets_advanced(
     if len(df) == 0:
         raise ValueError("Dataset is empty – check csv_path and image_dir.")
 
+    if messidor_dir and os.path.exists(messidor_dir):
+        from dataset_loader_messidor import load_messidor_as_idrid_format
+        messidor_df = load_messidor_as_idrid_format(messidor_dir)
+        df = pd.concat([df, messidor_df], ignore_index=True)
+        logger.info("Combined dataset: %d samples (IDRiD + MESSIDOR)", len(df))
+        
     paths = df["image_path"].values
     dme_labels = df["dme_label"].values.astype(int)
     dr_labels = df["dr_label"].values.astype(int)
@@ -570,6 +573,8 @@ def main():
     parser.add_argument("--create-mock", action="store_true")
     parser.add_argument("--kfold", type=int, default=0,
                         help="Number of CV folds (0 = no cross-validation)")
+    parser.add_argument("--messidor-dir", type=str, default=None,
+                        help="Path to MESSIDOR dataset directory")
     args = parser.parse_args()
 
     if args.mock or args.create_mock or args.csv is None:
@@ -601,6 +606,7 @@ def main():
             val_split=args.val_split,
             seed=args.seed,
             output_dir=args.output_dir,
+            messidor_dir=None,
         )
         print(json.dumps(split_info, indent=2))
 
