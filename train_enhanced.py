@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from argon2 import Parameters
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -901,19 +900,7 @@ def train_enhanced(
     logger.info("Saved weights to '%s'.", output_weights)
 
     return model, history.history
-"""
 
-The key changes from your version are:
-
-- Bias initialization is now **inside the function**, inside the `else` block (stage 1 only), after the backbone freeze
-- Wrapped in `try/except` so it won't crash if layer name differs
-- Uses `class_counts.sum()` instead of hardcoded `330` so it works if sample count changes
-- The stray code after `return` is removed entirely
-
-After this runs you should see in the logs:
-✅ DME head bias initialized: [-0.856, -2.303, -0.752]
-
-"""
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------

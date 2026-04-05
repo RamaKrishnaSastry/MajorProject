@@ -467,17 +467,11 @@ def run_pipeline(
     # Stage 2: Fine-tuning (lower LR, starting from stage1 weights)
     if two_stage:
         logger.info("\n" + "=" * 60 + "\nSTAGE 2: Fine-Tuning\n" + "=" * 60)
-        best_stage1_ckpt = os.path.join(
-            cfg.get("checkpoint_dir", "pipeline_outputs/checkpoints"),
-            "stage1", "best_qwk.weights.h5"
-        )
-        stage2_weights = best_stage1_ckpt if os.path.exists(best_stage1_ckpt) else weights1
-        logger.info("Stage 2 starting from: %s", stage2_weights)
+        logger.info("Stage 2 starting from: %s", stage2_init_weights)
         model, history2, weights2 = stage_training(
             train_ds, val_ds, class_weights, cfg,
             stage_name="stage2",
-            pretrained_weights=stage2_weights,
-            eyepacs_backbone=eyepacs_backbone,
+            pretrained_weights=stage2_init_weights,
         )
         metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
         all_metrics["stage2"] = metrics2
