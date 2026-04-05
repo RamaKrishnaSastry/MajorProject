@@ -450,7 +450,19 @@ def run_pipeline(
     logger.info("Stage 1 QWK: %.4f", metrics1["qwk"])
 
     best_stage1_weights = os.path.join(cfg["checkpoint_dir"], "stage1", "best_qwk.weights.h5")
-    stage2_init_weights = best_stage1_weights if os.path.exists(best_stage1_weights) else weights1
+    if os.path.exists(best_stage1_weights):
+        stage2_init_weights = best_stage1_weights
+        logger.info(
+            "Stage 2 will start from Stage 1 best full-model checkpoint: '%s'",
+            stage2_init_weights,
+        )
+    else:
+        stage2_init_weights = weights1
+        logger.warning(
+            "Stage 1 best checkpoint not found at '%s'. Falling back to final Stage 1 weights '%s'.",
+            best_stage1_weights,
+            stage2_init_weights,
+        )
 
     # Stage 2: Fine-tuning (lower LR, starting from stage1 weights)
     if two_stage:

@@ -695,6 +695,29 @@ def build_enhanced_callbacks(
     return callbacks
 
 
+def _freeze_batchnorm_layers(model: keras.Model) -> int:
+    """Recursively freeze all BatchNorm layers and return the count."""
+    count = 0
+    stack = [model]
+    seen = set()
+
+    while stack:
+        current = stack.pop()
+        obj_id = id(current)
+        if obj_id in seen:
+            continue
+        seen.add(obj_id)
+
+        if isinstance(current, keras.layers.BatchNormalization):
+            current.trainable = False
+            count += 1
+
+        if isinstance(current, keras.Model):
+            stack.extend(current.layers)
+
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Main training entry point (enhanced)
 # ---------------------------------------------------------------------------
@@ -723,22 +746,32 @@ def train_enhanced(
             backbone_weights_path=backbone_weights_path,
         )
     else:
-        logger.info("Stage 1: Backbone frozen, training ASPP + heads only")
-        if eyepacs_backbone is not None:
+        if pretrained_weights is not None:
+            logger.info("Stage 2: full-model fine-tuning from Stage 1 checkpoint")
+            backbone_weights = None
+        elif eyepacs_backbone is not None:
+            logger.info("Stage 1: Backbone frozen, training ASPP + heads only")
             backbone_weights = None
             logger.info("EyePACS backbone weights will be loaded from '%s'.", eyepacs_backbone)
         else:
+            logger.info("Stage 1: Backbone frozen, training ASPP + heads only")
             backbone_weights = "imagenet"
+
+        model_backbone_weights_path = (
+            None
+            if (eyepacs_backbone is not None or pretrained_weights is not None)
+            else backbone_weights_path
+        )
 
         model = build_model(
             input_shape=tuple(cfg["input_shape"]),
             backbone_weights=backbone_weights,
             num_dme_classes=cfg["num_dme_classes"],
             trainable=True,
-            backbone_weights_path=None if eyepacs_backbone is not None else backbone_weights_path,
+            backbone_weights_path=model_backbone_weights_path,
         )
 
-        if eyepacs_backbone is not None:
+        if eyepacs_backbone is not None and pretrained_weights is None:
             # EyePACS artifact stores backbone weights, so load directly into backbone.
             try:
                 backbone_layer = model.get_layer("resnet50_conv4_backbone")
@@ -771,13 +804,54 @@ def train_enhanced(
                 logger.warning("Could not initialize DME bias: %s", e)
 
         else:
-            # Stage 2: load Stage 1 weights and unfreeze backbone for full fine-tuning
-            model.load_weights(pretrained_weights, skip_mismatch=True)
+            # Stage 2: strictly restore full Stage 1 checkpoint (backbone + heads)
+            if not os.path.exists(pretrained_weights):
+                raise FileNotFoundError(
+                    f"Stage 2 checkpoint not found: '{pretrained_weights}'. "
+                    "Cannot start fine-tuning without Stage 1 weights."
+                )
+
+            logger.info(
+                "Stage 2 restoring full Stage 1 checkpoint (backbone + heads) from '%s'.",
+                pretrained_weights,
+            )
+
+            dme_head = model.get_layer("dme_risk")
+            dme_head_before = [np.copy(w) for w in dme_head.get_weights()]
+
+            # Strict load: do not allow silent partial restores.
+            model.load_weights(pretrained_weights)
+
+            dme_head_after = dme_head.get_weights()
+            if dme_head_before and dme_head_after and len(dme_head_before) == len(dme_head_after):
+                max_head_delta = max(
+                    float(np.max(np.abs(before - after)))
+                    for before, after in zip(dme_head_before, dme_head_after)
+                )
+                if max_head_delta < 1e-8:
+                    raise RuntimeError(
+                        "Stage 2 checkpoint restore verification failed: "
+                        "DME head weights did not change after loading Stage 1 checkpoint."
+                    )
+                logger.info(
+                    "Stage 2 checkpoint restore verified (max |delta| in DME head = %.3e).",
+                    max_head_delta,
+                )
+            else:
+                logger.warning(
+                    "Could not verify DME head restore; layer weights unavailable for comparison."
+                )
+
             try:
                 backbone_layer = model.get_layer("resnet50_conv4_backbone")
                 backbone_layer.trainable = True
+                bn_frozen = _freeze_batchnorm_layers(model)
                 trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
-                logger.info("✅ Stage 2: Backbone UNFROZEN. Trainable params: %d", trainable_count)
+                logger.info(
+                    "✅ Stage 2: Backbone UNFROZEN with %d BatchNorm layers frozen. Trainable params: %d",
+                    bn_frozen,
+                    trainable_count,
+                )
             except Exception as e:
                 logger.warning("Could not unfreeze backbone for Stage 2: %s", e)
 
