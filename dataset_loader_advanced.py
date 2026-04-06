@@ -78,10 +78,10 @@ def compute_ordinal_class_weights(
        a modest 2x boost. No DME (class 0) and Moderate (class 2) are equally weighted at 1.0x.
        This prevents aggressive over-weighting that would cause mode collapse.
 
-    3. **Post-normalization clipping**: After medical importance scaling, weights are
-       re-normalized so the mean is 1.0 (keeping the loss scale interpretable). A safety check
-       ensures the ratio of max to min weight does not exceed 5x. If it does (e.g., due to
-       extreme class imbalance), weights are clipped and re-normalized to maintain stability.
+     3. **Post-normalization clipping**: After medical importance scaling, weights are
+         re-normalized so the mean is 1.0 (keeping the loss scale interpretable). A safety check
+         ensures the ratio of max to min weight does not exceed 9x. If it does (e.g., due to
+         extreme class imbalance), weights are clipped and re-normalized to maintain stability.
 
     Parameters
     ----------
@@ -106,16 +106,16 @@ def compute_ordinal_class_weights(
 
     Notes
     -----
-    - **Why not use sklearn's compute_class_weight?** The custom implementation gives us
-      explicit control over medical importance and the 5x safety ceiling, which prevents
+        - **Why not use sklearn's compute_class_weight?** The custom implementation gives us
+            explicit control over medical importance and the 9x safety ceiling, which prevents
       pathological weighting schemes that cause mode collapse on minority classes.
 
     - **Why re-normalize after medical scaling?** Ensures the mean weight stays 1.0 across
       training. This keeps the effective loss scale consistent regardless of the importance
       multipliers chosen, making training dynamics more predictable.
 
-    - **Why 5x ceiling?** Weights > 5x skew the loss landscape too severely. On a 413-sample
-      dataset with 3 classes, even 3x is aggressive. The 5x limit is a safety guardrail
+        - **Why 9x ceiling?** Weights > 9x skew the loss landscape too severely. On a 413-sample
+            dataset with 3 classes, even 3x is aggressive. The 9x limit is a safety guardrail
       against silent failure modes like loss NaN or gradient explosion.
 
     - **Interaction with oversampling:** When class 1 (Mild) is oversampled 3x in the training
@@ -154,15 +154,15 @@ def compute_ordinal_class_weights(
     mean_w = np.mean(list(class_weights.values()))
     class_weights = {k: round(v / mean_w, 4) for k, v in class_weights.items()}
 
-    # Step 4: sanity check — no weight should be > 5x any other weight
+    # Step 4: sanity check — no weight should be > 9x any other weight
     vals = list(class_weights.values())
     ratio = max(vals) / min(vals)
-    if ratio > 8.0:
+    if ratio > 9.0:
         logger.warning(
-            "Class weight ratio %.1fx exceeds safe limit. Clipping to 5x.", ratio
+            "Class weight ratio %.1fx, clipping to 9x.", ratio
         )
         min_w = min(vals)
-        class_weights = {k: min(v, min_w * 5.0) for k, v in class_weights.items()}
+        class_weights = {k: min(v, min_w * 9.0) for k, v in class_weights.items()}
         # re-normalize after clipping
         mean_w = np.mean(list(class_weights.values()))
         class_weights = {k: round(v / mean_w, 4) for k, v in class_weights.items()}

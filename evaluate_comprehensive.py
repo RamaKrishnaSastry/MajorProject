@@ -298,6 +298,109 @@ def plot_comprehensive_dashboard(
     logger.info("Comprehensive dashboard saved to '%s'.", output_path)
 
 
+def evaluate_dr_grading(
+    model: keras.Model,
+    val_ds: tf.data.Dataset,
+    output_dir: str,
+    num_dr_classes: int = 5,
+) -> Dict:
+    """Evaluate DR regression head by converting outputs to ordinal grades.
+
+    Parameters
+    ----------
+    model : keras.Model
+        Multi-output model containing DR head.
+    val_ds : tf.data.Dataset
+        Validation dataset yielding ``(images, labels)``.
+    output_dir : str
+        Directory where ``dr_metrics.json`` is written.
+    num_dr_classes : int
+        Number of DR grades (default 5 → labels 0..4).
+
+    Returns
+    -------
+    dict
+        DR grading metrics.
+    """
+    dr_true_all: List[int] = []
+    dr_pred_all: List[int] = []
+
+    def _extract_dr_prediction(preds):
+        if isinstance(preds, dict):
+            return preds["dr_output"]
+        if isinstance(preds, (list, tuple)):
+            return preds[0]
+        return preds
+
+    def _extract_dr_target(batch_y):
+        if isinstance(batch_y, dict):
+            return batch_y["dr_output"]
+        if isinstance(batch_y, (list, tuple)):
+            for item in batch_y:
+                shape = getattr(item, "shape", None)
+                if shape is not None and (len(shape) == 1 or (len(shape) > 1 and shape[-1] == 1)):
+                    return item
+            return batch_y[0]
+        return batch_y
+
+    for batch_x, batch_y in val_ds:
+        preds = model(batch_x, training=False)
+        dr_out = _extract_dr_prediction(preds).numpy().flatten()
+
+        dr_gt = _extract_dr_target(batch_y).numpy().flatten()
+
+        dr_pred_grades = np.clip(np.round(dr_out).astype(int), 0, num_dr_classes - 1)
+        dr_true_grades = np.clip(np.round(dr_gt).astype(int), 0, num_dr_classes - 1)
+
+        dr_true_all.extend(dr_true_grades.tolist())
+        dr_pred_all.extend(dr_pred_grades.tolist())
+
+    try:
+        from sklearn.metrics import cohen_kappa_score, accuracy_score, confusion_matrix
+        dr_qwk = float(cohen_kappa_score(dr_true_all, dr_pred_all, weights="quadratic"))
+        dr_acc = float(accuracy_score(dr_true_all, dr_pred_all))
+        cm = confusion_matrix(dr_true_all, dr_pred_all, labels=list(range(num_dr_classes)))
+    except ImportError:
+        logger.warning("scikit-learn unavailable; DR accuracy/confusion fallback to NumPy.")
+        dr_qwk = float(compute_quadratic_weighted_kappa(np.array(dr_true_all), np.array(dr_pred_all), num_dr_classes))
+        dr_acc = float(np.mean(np.array(dr_true_all) == np.array(dr_pred_all)))
+        cm = np.array(
+            [
+                [
+                    int(np.sum((np.array(dr_true_all) == i) & (np.array(dr_pred_all) == j)))
+                    for j in range(num_dr_classes)
+                ]
+                for i in range(num_dr_classes)
+            ]
+        )
+
+    dr_mae = float(np.mean(np.abs(np.array(dr_true_all) - np.array(dr_pred_all))))
+    dr_rmse = float(np.sqrt(np.mean((np.array(dr_true_all) - np.array(dr_pred_all)) ** 2)))
+
+    logger.info("DR Grading Results:")
+    logger.info("  QWK:      %.4f", dr_qwk)
+    logger.info("  Accuracy: %.4f", dr_acc)
+    logger.info("  MAE:      %.4f", dr_mae)
+    logger.info("  RMSE:     %.4f", dr_rmse)
+    logger.info("  Confusion:\n%s", cm)
+
+    results = {
+        "dr_qwk": dr_qwk,
+        "dr_accuracy": dr_acc,
+        "dr_mae": dr_mae,
+        "dr_rmse": dr_rmse,
+        "confusion_matrix": cm.tolist(),
+    }
+
+    os.makedirs(output_dir, exist_ok=True)
+    dr_json_path = os.path.join(output_dir, "dr_metrics.json")
+    with open(dr_json_path, "w") as f:
+        json.dump(results, f, indent=2)
+    logger.info("DR metrics saved to '%s'.", dr_json_path)
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Comprehensive evaluation pipeline
 # ---------------------------------------------------------------------------
@@ -386,6 +489,9 @@ def evaluate_comprehensive(
             names[i]: int(np.sum(y_true == i)) for i in range(num_dme_classes)
         },
     }
+
+    dr_metrics = evaluate_dr_grading(model, dataset, output_dir)
+    metrics["dr"] = dr_metrics
 
     logger.info("QWK:        %.4f %s", metrics["qwk"], "(✅ TARGET MET)" if metrics["target_met"] else f"(❌ below {QWK_TARGET_THRESHOLD})")
     logger.info("MAE:        %.3f", metrics["mae"])
