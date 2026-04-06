@@ -15,6 +15,7 @@ import os
 import random
 import shutil
 import time
+import glob
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -549,6 +550,87 @@ def run_pipeline(
     return report
 
 
+def run_stage2_only(
+    csv_path: str,
+    image_dir: str,
+    config: Optional[Dict] = None,
+    config_path: Optional[str] = None,
+) -> Dict:
+    """Run only Stage 2 fine-tuning using an existing Stage 1 checkpoint.
+
+    Requires Stage 1 artifacts under output directory:
+    - checkpoints/stage1/stage1_best_*.weights.h5 or best_qwk.weights.h5
+    - eval_stage1/comprehensive_metrics.json
+    """
+    cfg = config or load_config(config_path)
+    set_global_seed(cfg.get("seed", 42))
+
+    os.makedirs(cfg["output_dir"], exist_ok=True)
+
+    config_out = os.path.join(cfg["output_dir"], "effective_config.json")
+    with open(config_out, "w") as f:
+        json.dump(cfg, f, indent=2)
+    logger.info("Effective config saved to '%s'.", config_out)
+
+    t_total = time.time()
+
+    train_ds, val_ds, class_weights, _ = stage_data_preparation(csv_path, image_dir, cfg)
+
+    stage1_dir = os.path.join(cfg["checkpoint_dir"], "stage1")
+    stage1_snapshots = sorted(glob.glob(os.path.join(stage1_dir, "stage1_best_*.weights.h5")))
+    stage2_init_weights = (
+        stage1_snapshots[-1]
+        if stage1_snapshots
+        else os.path.join(stage1_dir, "best_qwk.weights.h5")
+    )
+
+    if not os.path.exists(stage2_init_weights):
+        raise FileNotFoundError(
+            "Stage 2 only mode needs a Stage 1 checkpoint. "
+            f"Expected '{stage2_init_weights}'. Run Stage 1 first."
+        )
+
+    stage1_metrics_path = os.path.join(
+        cfg["output_dir"], "eval_stage1", "comprehensive_metrics.json"
+    )
+    if not os.path.exists(stage1_metrics_path):
+        raise FileNotFoundError(
+            "Stage 2 only mode needs Stage 1 evaluation metrics at "
+            f"'{stage1_metrics_path}'. Run Stage 1 evaluation first."
+        )
+
+    with open(stage1_metrics_path, "r") as f:
+        stage1_metrics = json.load(f)
+    stage1_baseline_qwk = float(stage1_metrics.get("qwk", float("nan")))
+    if not np.isfinite(stage1_baseline_qwk):
+        raise ValueError(
+            "Could not read finite Stage 1 QWK baseline from "
+            f"'{stage1_metrics_path}'."
+        )
+
+    logger.info("\n" + "=" * 60 + "\nSTAGE 2: Fine-Tuning\n" + "=" * 60)
+    logger.info("Stage 2 starting from: %s", stage2_init_weights)
+    model, history2, weights2 = stage_training(
+        train_ds,
+        val_ds,
+        class_weights,
+        cfg,
+        stage_name="stage2",
+        pretrained_weights=stage2_init_weights,
+        stage1_baseline_qwk=stage1_baseline_qwk,
+    )
+    metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
+    logger.info("Stage 2 QWK: %.4f", metrics2.get("qwk", float("nan")))
+
+    report = aggregate_results({"stage2": metrics2}, cfg["output_dir"])
+    elapsed = time.time() - t_total
+    logger.info("Total stage2-only time: %.1f seconds.", elapsed)
+    report["elapsed_seconds"] = round(elapsed, 1)
+    report["stage2_init_weights"] = stage2_init_weights
+    report["stage1_baseline_qwk"] = stage1_baseline_qwk
+    return report
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -569,6 +651,8 @@ def main():
     parser.add_argument("--mock", action="store_true")
     parser.add_argument("--single-stage", action="store_true",
                         help="Run only stage 1 (no fine-tuning)")
+    parser.add_argument("--stage2-only", action="store_true",
+                        help="Run only stage 2 using an existing stage1 checkpoint")
     parser.add_argument("--use-eyepacs", type=str, default=None, metavar="WEIGHTS_PATH",
                         help="Path to EyePACS backbone weights (.weights.h5) saved by "
                              "preprocessing.ipynb. When provided, stage 1 uses EyePACS "
@@ -598,14 +682,24 @@ def main():
     if args.batch_size:
         cfg["batch_size"] = args.batch_size
 
-    report = run_pipeline(
-        csv_path=csv_path,
-        image_dir=image_dir,
-        config=cfg,
-        two_stage=not args.single_stage,
-        eyepacs_backbone=args.use_eyepacs,
-        backbone_weights_path=args.backbone_weights_path,
-    )
+    if args.single_stage and args.stage2_only:
+        parser.error("--single-stage and --stage2-only are mutually exclusive")
+
+    if args.stage2_only:
+        report = run_stage2_only(
+            csv_path=csv_path,
+            image_dir=image_dir,
+            config=cfg,
+        )
+    else:
+        report = run_pipeline(
+            csv_path=csv_path,
+            image_dir=image_dir,
+            config=cfg,
+            two_stage=not args.single_stage,
+            eyepacs_backbone=args.use_eyepacs,
+            backbone_weights_path=args.backbone_weights_path,
+        )
 
     print("\nPipeline Report:")
     print(json.dumps(report, indent=2))
