@@ -828,8 +828,9 @@ def _freeze_batchnorm_layers(model: keras.Model) -> int:
             current.trainable = False
             count += 1
 
-        if isinstance(current, keras.Model):
-            stack.extend(current.layers)
+        child_layers = getattr(current, "layers", None)
+        if child_layers:
+            stack.extend(child_layers)
 
     return count
 
