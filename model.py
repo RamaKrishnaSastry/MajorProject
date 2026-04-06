@@ -177,7 +177,7 @@ def build_aspp(
 # DR head (Regression)
 # ---------------------------------------------------------------------------
 
-def build_dr_head(x: tf.Tensor) -> tf.Tensor:
+def build_dr_head(x: tf.Tensor, dropout_rate: float = 0.5) -> tf.Tensor:
     """Build the Diabetic Retinopathy (DR) regression head.
 
     Outputs a single non-negative scalar representing DR severity (0-4 scale).
@@ -197,7 +197,7 @@ def build_dr_head(x: tf.Tensor) -> tf.Tensor:
     """
     x = layers.GlobalAveragePooling2D(name="dr_gap")(x)
     x = layers.Dense(256, activation="relu", name="dr_fc1")(x)
-    x = layers.Dropout(0.5, name="dr_dropout")(x)
+    x = layers.Dropout(dropout_rate, name="dr_dropout")(x)
     x = layers.Dense(1, activation="relu", name="dr_output")(x)
     return x
 
@@ -206,7 +206,11 @@ def build_dr_head(x: tf.Tensor) -> tf.Tensor:
 # DME head (Classification)
 # ---------------------------------------------------------------------------
 
-def build_dme_head(x: tf.Tensor, num_classes: int = 3) -> tf.Tensor:
+def build_dme_head(
+    x: tf.Tensor,
+    num_classes: int = 3,
+    dropout_rate: float = 0.5,
+) -> tf.Tensor:
     """Build the DME (Diabetic Macular Edema) classification head.
 
     Parameters
@@ -223,7 +227,7 @@ def build_dme_head(x: tf.Tensor, num_classes: int = 3) -> tf.Tensor:
     """
     x = layers.GlobalAveragePooling2D(name="dme_gap")(x)
     x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(0.5, name="dme_dropout")(x)
+    x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
     x = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
     return x
 
@@ -237,6 +241,7 @@ def build_model(
     backbone_weights: str = "imagenet",
     num_dme_classes: int = 3,
     aspp_filters: int = 256,
+    dropout_rate: float = 0.5,
     trainable: bool = True,
     backbone_weights_path: Optional[str] = None,
 ) -> keras.Model:
@@ -287,10 +292,14 @@ def build_model(
     aspp_out = build_aspp(features, filters=aspp_filters)
     logger.info("✅ ASPP module added")
     # DR head (regression – compatible with EyePACS pre-trained weights)
-    dr_out = build_dr_head(aspp_out)
+    dr_out = build_dr_head(aspp_out, dropout_rate=dropout_rate)
 
     # DME head (3-class classification)
-    dme_out = build_dme_head(aspp_out, num_classes=num_dme_classes)
+    dme_out = build_dme_head(
+        aspp_out,
+        num_classes=num_dme_classes,
+        dropout_rate=dropout_rate,
+    )
 
     # Build model
     model = keras.Model(
@@ -319,6 +328,7 @@ def build_model_dme_tuning(
     pretrained_weights: Optional[str] = None,
     num_dme_classes: int = 3,
     aspp_filters: int = 256,
+    dropout_rate: float = 0.5,
     backbone_weights_path: Optional[str] = None,
 ) -> keras.Model:
     """Build the DME fine-tuning model with only DME head trainable.
@@ -351,6 +361,7 @@ def build_model_dme_tuning(
         backbone_weights="imagenet",
         num_dme_classes=num_dme_classes,
         aspp_filters=aspp_filters,
+        dropout_rate=dropout_rate,
         trainable=True,  # Start with all trainable
         backbone_weights_path=backbone_weights_path,
     )
