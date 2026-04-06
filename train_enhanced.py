@@ -48,6 +48,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "num_dme_classes": 3,
     "num_dr_classes": 5,
     "learning_rate": 1e-4,
+    "dropout_rate": 0.5,
     "batch_size": 8,
     "epochs": 50,
     "early_stopping_patience": 8,
@@ -294,6 +295,58 @@ def log_dataset_class_distribution(
         "%s DME class distribution from first %d batches: counts=%s, pct=%s",
         name, max_batches, counts.tolist(), fractions,
     )
+
+
+def compute_dataset_class_counts(
+    dataset: tf.data.Dataset,
+    num_classes: int = NUM_DME_CLASSES,
+) -> Optional[np.ndarray]:
+    """Compute exact DME class counts by iterating the full dataset once."""
+    if num_classes <= 0:
+        return None
+
+    try:
+        cardinality = int(tf.data.experimental.cardinality(dataset).numpy())
+        if cardinality == tf.data.experimental.INFINITE_CARDINALITY:
+            logger.warning("Dataset has infinite cardinality; cannot compute exact class counts.")
+            return None
+    except Exception:
+        cardinality = None
+
+    counts = np.zeros(num_classes, dtype=np.int64)
+
+    for batch_data in dataset:
+        if not isinstance(batch_data, (tuple, list)) or len(batch_data) < 2:
+            continue
+
+        _, batch_labels = batch_data
+        dme_labels = _extract_dme_labels(batch_labels)
+
+        try:
+            arr = dme_labels.numpy()
+        except (AttributeError, TypeError):
+            arr = np.asarray(dme_labels)
+
+        if arr.ndim > 1:
+            classes = np.argmax(arr, axis=-1)
+        else:
+            classes = arr.astype(int).reshape(-1)
+
+        classes = np.clip(classes, 0, num_classes - 1)
+        counts += np.bincount(classes, minlength=num_classes)
+
+    total = int(np.sum(counts))
+    if total == 0:
+        logger.warning("Could not compute class counts from training dataset (zero samples read).")
+        return None
+
+    logger.info(
+        "Computed exact train DME class counts from dataset: %s (samples=%d, batches=%s)",
+        counts.tolist(),
+        total,
+        "unknown" if cardinality in (None, tf.data.experimental.UNKNOWN_CARDINALITY) else cardinality,
+    )
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -840,10 +893,19 @@ def build_enhanced_callbacks(
     return callbacks
 
 
-def _freeze_batchnorm_layers(model: keras.Model) -> int:
-    """Recursively freeze all BatchNorm layers and return the count."""
+def _freeze_backbone_batchnorm_layers(
+    model: keras.Model,
+    backbone_layer_name: str = "resnet50_conv4_backbone",
+) -> int:
+    """Freeze BatchNorm layers inside backbone only and return the count."""
     count = 0
-    stack = [model]
+    try:
+        backbone = model.get_layer(backbone_layer_name)
+    except Exception as e:
+        logger.warning("Could not locate backbone layer '%s': %s", backbone_layer_name, e)
+        return 0
+
+    stack = [backbone]
     seen = set()
 
     while stack:
@@ -889,6 +951,7 @@ def train_enhanced(
             input_shape=tuple(cfg["input_shape"]),
             pretrained_weights=pretrained_weights,
             num_dme_classes=cfg["num_dme_classes"],
+            dropout_rate=float(cfg.get("dropout_rate", 0.5)),
             backbone_weights_path=backbone_weights_path,
         )
     else:
@@ -913,6 +976,7 @@ def train_enhanced(
             input_shape=tuple(cfg["input_shape"]),
             backbone_weights=backbone_weights,
             num_dme_classes=cfg["num_dme_classes"],
+            dropout_rate=float(cfg.get("dropout_rate", 0.5)),
             trainable=True,
             backbone_weights_path=model_backbone_weights_path,
         )
@@ -938,14 +1002,24 @@ def train_enhanced(
 
             try:
                 dme_head = model.get_layer("dme_risk")
-                class_counts = np.array([141, 33, 156], dtype=np.float32)
+                class_counts = compute_dataset_class_counts(
+                    train_ds,
+                    num_classes=int(cfg.get("num_dme_classes", NUM_DME_CLASSES)),
+                )
+                if class_counts is None:
+                    raise ValueError("Training class counts unavailable for DME bias initialization.")
+                class_counts = class_counts.astype(np.float32)
                 class_probs = class_counts / class_counts.sum()
                 log_probs = np.log(class_probs + 1e-7)
                 w = dme_head.get_weights()
                 if len(w) >= 2:
                     w[1] = log_probs
                     dme_head.set_weights(w)
-                    logger.info("✅ DME head bias initialized: %s", np.round(log_probs, 3))
+                    logger.info(
+                        "✅ DME head bias initialized from train split counts=%s -> log_probs=%s",
+                        class_counts.astype(int).tolist(),
+                        np.round(log_probs, 3),
+                    )
             except Exception as e:
                 logger.warning("Could not initialize DME bias: %s", e)
 
@@ -991,10 +1065,10 @@ def train_enhanced(
             try:
                 backbone_layer = model.get_layer("resnet50_conv4_backbone")
                 backbone_layer.trainable = True
-                bn_frozen = _freeze_batchnorm_layers(model)
+                bn_frozen = _freeze_backbone_batchnorm_layers(model)
                 trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
                 logger.info(
-                    "✅ Stage 2: Backbone UNFROZEN with %d BatchNorm layers frozen. Trainable params: %d",
+                    "✅ Stage 2: Backbone UNFROZEN with %d backbone BN layers frozen (ASPP BN remains trainable). Trainable params: %d",
                     bn_frozen,
                     trainable_count,
                 )

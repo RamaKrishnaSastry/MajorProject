@@ -276,6 +276,7 @@ def stage_training(
     from train_enhanced import train_enhanced, DEFAULT_ENHANCED_CONFIG
 
     stage_cfg = config.get(stage_name, {})
+    model_cfg = config.get("model", {}) if isinstance(config.get("model"), dict) else {}
     checkpoint_dir = os.path.join(config.get("checkpoint_dir", "checkpoints"), stage_name)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -286,6 +287,7 @@ def stage_training(
         "batch_size": config["batch_size"],
         "epochs": stage_cfg.get("epochs", 30),
         "learning_rate": stage_cfg.get("learning_rate", 1e-4),
+        "dropout_rate": float(model_cfg.get("dropout_rate", DEFAULT_ENHANCED_CONFIG["dropout_rate"])),
         "early_stopping_patience": stage_cfg.get("early_stopping_patience", 5),
         "lr_reduce_patience": stage_cfg.get("lr_reduce_patience", 3),
         "lr_reduce_factor": stage_cfg.get("lr_reduce_factor", 0.5),
