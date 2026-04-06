@@ -757,6 +757,8 @@ def build_enhanced_callbacks(
         QWKCallback(
             val_dataset=val_dataset,
             num_classes=config["num_dme_classes"],
+            dr_num_classes=config.get("num_dr_classes", 5),
+            compute_dr_metrics=True,
             history_path=config["qwk_history_path"],
             verbose=1,
             max_batches=config.get("max_batches", None),

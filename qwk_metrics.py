@@ -600,6 +600,8 @@ if _TF_AVAILABLE:
             self,
             val_dataset,
             num_classes: int = NUM_DME_CLASSES,
+            dr_num_classes: int = NUM_DR_CLASSES,
+            compute_dr_metrics: bool = True,
             history_path: str = "qwk_history.json",
             verbose: int = 1,
             max_batches: Optional[int] = None,
@@ -607,10 +609,16 @@ if _TF_AVAILABLE:
             super().__init__()
             self.val_dataset = val_dataset
             self.num_classes = num_classes
+            self.dr_num_classes = dr_num_classes
+            self.compute_dr_metrics = compute_dr_metrics
             self.history_path = history_path
             self.verbose = verbose
             self.max_batches = max_batches
             self.qwk_history: List[float] = []
+            self.dr_qwk_history: List[float] = []
+            self.dr_accuracy_history: List[float] = []
+            self.dr_mae_history: List[float] = []
+            self.dr_rmse_history: List[float] = []
             self.best_qwk: float = -1.0
             self.best_epoch: int = 0
             # Backward-compatible alias used by older callback consumers
@@ -635,6 +643,8 @@ if _TF_AVAILABLE:
             try:
                 all_true = []
                 all_pred = []
+                all_true_dr = []
+                all_pred_dr = []
                 batch_count = 0
 
                 for batch_idx, batch_data in enumerate(self.val_dataset):
@@ -650,12 +660,15 @@ if _TF_AVAILABLE:
                             continue
 
                         # Extract true labels - handle dict and tuple formats
+                        dr_labels = None
                         if isinstance(batch_labels, dict):
                             # Multi-output model: dict of outputs
                             dme_labels = batch_labels.get('dme_risk', batch_labels.get('dme_output'))
+                            dr_labels = batch_labels.get('dr_output')
                         elif isinstance(batch_labels, (tuple, list)):
                             # Multi-output model: tuple of outputs (dr_output, dme_risk)
                             dme_labels = batch_labels[1] if len(batch_labels) > 1 else batch_labels[0]
+                            dr_labels = batch_labels[0] if len(batch_labels) > 0 else None
                         else:
                             # Single output
                             dme_labels = batch_labels
@@ -663,12 +676,15 @@ if _TF_AVAILABLE:
                         # Get predictions - handle dict and tuple formats
                         predictions = self.model(images, training=False)
 
+                        dr_preds = None
                         if isinstance(predictions, dict):
                             # Multi-output model: dict of predictions
                             dme_preds = predictions.get('dme_risk', predictions.get('dme_output'))
+                            dr_preds = predictions.get('dr_output')
                         elif isinstance(predictions, (tuple, list)):
                             # Multi-output model: tuple of predictions (dr_output, dme_risk)
                             dme_preds = predictions[1] if len(predictions) > 1 else predictions[0]
+                            dr_preds = predictions[0] if len(predictions) > 0 else None
                         else:
                             # Single output
                             dme_preds = predictions
@@ -693,6 +709,36 @@ if _TF_AVAILABLE:
 
                         all_true.append(true_classes)
                         all_pred.append(pred_classes)
+
+                        # Optional DR metrics for multi-task models.
+                        if self.compute_dr_metrics and dr_labels is not None and dr_preds is not None:
+                            try:
+                                try:
+                                    dr_true_raw = dr_labels.numpy().reshape(-1)
+                                except (AttributeError, TypeError):
+                                    dr_true_raw = np.asarray(dr_labels).reshape(-1)
+
+                                try:
+                                    dr_pred_raw = dr_preds.numpy().reshape(-1)
+                                except (AttributeError, TypeError):
+                                    dr_pred_raw = np.asarray(dr_preds).reshape(-1)
+
+                                dr_true_grades = np.clip(
+                                    np.rint(dr_true_raw).astype(int),
+                                    0,
+                                    self.dr_num_classes - 1,
+                                )
+                                dr_pred_grades = np.clip(
+                                    np.rint(dr_pred_raw).astype(int),
+                                    0,
+                                    self.dr_num_classes - 1,
+                                )
+
+                                all_true_dr.append(dr_true_grades)
+                                all_pred_dr.append(dr_pred_grades)
+                            except Exception as dr_e:
+                                logger.warning(f"Batch {batch_idx}: DR metric extraction failed: {dr_e}")
+
                         batch_count += 1
 
                     except Exception as e:
@@ -741,14 +787,69 @@ if _TF_AVAILABLE:
                     if mask.sum() > 0:
                         per_class_acc[c] = float((y_pred[mask] == c).mean())
 
+                dr_fragment = ""
+                dr_detail = None
+                if all_true_dr and all_pred_dr:
+                    y_true_dr = np.concatenate(all_true_dr, axis=0)
+                    y_pred_dr = np.concatenate(all_pred_dr, axis=0)
+
+                    if len(y_true_dr) > 0 and len(y_pred_dr) > 0:
+                        dr_qwk = compute_quadratic_weighted_kappa(
+                            y_true_dr, y_pred_dr, num_classes=self.dr_num_classes
+                        )
+                        dr_acc = float(np.mean(y_true_dr == y_pred_dr))
+                        dr_mae = float(np.mean(np.abs(y_true_dr - y_pred_dr)))
+                        dr_rmse = float(np.sqrt(np.mean((y_true_dr - y_pred_dr) ** 2)))
+
+                        logs['val_dr_qwk'] = float(dr_qwk)
+                        logs['val_dr_accuracy'] = float(dr_acc)
+                        logs['val_dr_mae'] = float(dr_mae)
+                        logs['val_dr_rmse'] = float(dr_rmse)
+
+                        self.dr_qwk_history.append(float(dr_qwk))
+                        self.dr_accuracy_history.append(float(dr_acc))
+                        self.dr_mae_history.append(float(dr_mae))
+                        self.dr_rmse_history.append(float(dr_rmse))
+
+                        dr_unique_pred = np.unique(y_pred_dr)
+                        dr_true_dist = np.bincount(y_true_dr, minlength=self.dr_num_classes)
+                        dr_pred_dist = np.bincount(y_pred_dr, minlength=self.dr_num_classes)
+                        dr_per_class_acc = {}
+                        for c in range(self.dr_num_classes):
+                            mask = y_true_dr == c
+                            if mask.sum() > 0:
+                                dr_per_class_acc[c] = float((y_pred_dr[mask] == c).mean())
+
+                        dr_fragment = (
+                            f" | val_dr_qwk={dr_qwk:.4f} | val_dr_acc={dr_acc:.4f} "
+                            f"| val_dr_mae={dr_mae:.3f} | val_dr_rmse={dr_rmse:.3f}"
+                        )
+                        dr_detail = (
+                            list(dr_unique_pred),
+                            dict(enumerate(dr_true_dist)),
+                            dict(enumerate(dr_pred_dist)),
+                            dr_per_class_acc,
+                        )
+
                 if self.verbose:
                     approx_note = f" (approx, {batch_count} batches)" if self.max_batches is not None else ""
                     logger.info(
                         f"Epoch {epoch+1}: val_qwk={qwk:.4f}{approx_note} "
+                        f"{dr_fragment}"
                         f"(best={self.best_qwk:.4f} @ epoch {self.best_epoch}) | "
                         f"pred_classes={list(unique_pred)} | class_dist={dict(enumerate(class_dist))} | "
                         f"pred_dist={dict(enumerate(pred_dist))} | per_class_acc={per_class_acc}"
                     )
+                    if dr_detail is not None:
+                        dr_unique_pred, dr_true_dist, dr_pred_dist, dr_per_class_acc = dr_detail
+                        logger.info(
+                            "Epoch %d DR detail: pred_grades=%s | true_dist=%s | pred_dist=%s | per_grade_acc=%s",
+                            epoch + 1,
+                            dr_unique_pred,
+                            dr_true_dist,
+                            dr_pred_dist,
+                            dr_per_class_acc,
+                        )
 
                 # Model collapse detection: warn if only one class is predicted
                 if len(unique_pred) == 1:
@@ -764,6 +865,10 @@ if _TF_AVAILABLE:
                         "qwk_history": self.qwk_history,
                         "best_qwk": float(self.best_qwk),
                         "best_epoch": self.best_epoch,
+                        "dr_qwk_history": self.dr_qwk_history,
+                        "dr_accuracy_history": self.dr_accuracy_history,
+                        "dr_mae_history": self.dr_mae_history,
+                        "dr_rmse_history": self.dr_rmse_history,
                     }
                     try:
                         with open(self.history_path, 'w') as f:
