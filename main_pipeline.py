@@ -87,6 +87,11 @@ DEFAULT_PIPELINE_CONFIG = {
         "lr_reduce_factor": 0.3,
         "min_lr": 1e-8,
         "ordinal_loss_weighting": True,
+        # Abort stage2 if QWK collapses too far below stage1 baseline.
+        "collapse_guard_enabled": True,
+        "collapse_guard_ratio": 0.70,
+        "collapse_guard_min_abs_qwk": 0.20,
+        "collapse_guard_patience": 2,
     },
     "output_dir": "pipeline_outputs",
     "checkpoint_dir": "pipeline_outputs/checkpoints",
@@ -123,6 +128,29 @@ def load_config(config_path: Optional[str] = None) -> Dict:
         logger.info("Loaded config from '%s'.", config_path)
     elif config_path:
         logger.warning("Config file '%s' not found or YAML unavailable; using defaults.", config_path)
+
+    # Normalize max_batches to int or None (users often set malformed YAML values).
+    max_batches = config.get("max_batches", None)
+    if isinstance(max_batches, dict):
+        logger.warning("Invalid 'max_batches' format in config; using None (full validation set).")
+        config["max_batches"] = None
+    elif isinstance(max_batches, str):
+        token = max_batches.strip().lower()
+        if token in {"", "none", "null"}:
+            config["max_batches"] = None
+        else:
+            try:
+                parsed = int(token)
+                config["max_batches"] = parsed if parsed > 0 else None
+            except ValueError:
+                logger.warning("Could not parse 'max_batches=%s'; using None.", max_batches)
+                config["max_batches"] = None
+    elif isinstance(max_batches, int):
+        if max_batches <= 0:
+            config["max_batches"] = None
+    elif max_batches is not None:
+        logger.warning("Unsupported type for 'max_batches'; using None.")
+        config["max_batches"] = None
 
     return config
 
@@ -206,6 +234,7 @@ def stage_training(
     config: Dict,
     stage_name: str = "stage1",
     pretrained_weights: Optional[str] = None,
+    stage1_baseline_qwk: Optional[float] = None,
     eyepacs_backbone: Optional[str] = None,
     backbone_weights_path: Optional[str] = None,
 ) -> tuple:
@@ -225,6 +254,8 @@ def stage_training(
         Stage key in config (``"stage1"`` or ``"stage2"``).
     pretrained_weights : str, optional
         Pre-trained weights path.
+    stage1_baseline_qwk : float, optional
+        Stage 1 best QWK used by stage2 collapse guard.
     eyepacs_backbone : str, optional
         Path to EyePACS backbone weights saved by preprocessing.ipynb.
     backbone_weights_path : str, optional
@@ -264,6 +295,20 @@ def stage_training(
         "output_dir": config["output_dir"],
         "seed": config["seed"],
     }
+
+    if stage_name == "stage2":
+        train_config.update(
+            {
+                "stage1_baseline_qwk": stage1_baseline_qwk,
+                "stage2_init_weights_path": pretrained_weights,
+                "collapse_guard_enabled": stage_cfg.get("collapse_guard_enabled", True),
+                "collapse_guard_ratio": stage_cfg.get("collapse_guard_ratio", 0.70),
+                "collapse_guard_min_abs_qwk": stage_cfg.get("collapse_guard_min_abs_qwk", 0.20),
+                "collapse_guard_patience": stage_cfg.get("collapse_guard_patience", 2),
+                "stage2_revert_if_worse": stage_cfg.get("stage2_revert_if_worse", True),
+                "stage2_min_improvement": stage_cfg.get("stage2_min_improvement", 0.0),
+            }
+        )
 
     output_weights = os.path.join(config["output_dir"], f"model_{stage_name}.weights.h5")
     logger.info("Stage: %s (epochs=%d, lr=%.2e)", stage_name,
@@ -472,6 +517,7 @@ def run_pipeline(
             train_ds, val_ds, class_weights, cfg,
             stage_name="stage2",
             pretrained_weights=stage2_init_weights,
+            stage1_baseline_qwk=metrics1.get("qwk"),
         )
         metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
         all_metrics["stage2"] = metrics2

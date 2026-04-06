@@ -65,6 +65,10 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "focal_loss_gamma": 2.0,
     "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
+    # Stage2 safety: if best stage2 QWK does not beat stage1 baseline,
+    # restore stage1-init weights before returning/saving.
+    "stage2_revert_if_worse": True,
+    "stage2_min_improvement": 0.0,
 }
 
 
@@ -653,6 +657,79 @@ class LinearWarmupCallback(keras.callbacks.Callback):
         elif epoch == self.warmup_epochs:
             self.model.optimizer.learning_rate = self.target_lr
 
+
+class Stage2QWKCollapseGuard(keras.callbacks.Callback):
+    """Stop stage2 and restore init checkpoint if QWK collapses.
+
+    This protects a good stage1 model from catastrophic stage2 drift.
+    """
+
+    def __init__(
+        self,
+        baseline_qwk: float,
+        init_weights_path: str,
+        min_ratio: float = 0.70,
+        min_abs_qwk: float = 0.20,
+        patience: int = 2,
+        start_epoch: int = 1,
+        verbose: int = 1,
+    ):
+        super().__init__()
+        self.baseline_qwk = float(baseline_qwk)
+        self.init_weights_path = init_weights_path
+        self.min_ratio = float(min_ratio)
+        self.min_abs_qwk = float(min_abs_qwk)
+        self.patience = int(patience)
+        self.start_epoch = int(start_epoch)
+        self.verbose = verbose
+        self.bad_epochs = 0
+
+    def _threshold(self) -> float:
+        ratio_threshold = self.baseline_qwk * self.min_ratio
+        # Only enforce absolute floor when baseline itself is reasonably high.
+        if self.baseline_qwk >= self.min_abs_qwk:
+            return max(ratio_threshold, self.min_abs_qwk)
+        return ratio_threshold
+
+    def on_epoch_end(self, epoch: int, logs=None):
+        logs = logs or {}
+        current_qwk = logs.get("val_qwk", None)
+        if current_qwk is None:
+            return
+
+        epoch_num = epoch + 1
+        if epoch_num < self.start_epoch:
+            return
+
+        threshold = self._threshold()
+        if float(current_qwk) < threshold:
+            self.bad_epochs += 1
+            if self.verbose:
+                logger.warning(
+                    "Stage2CollapseGuard: val_qwk=%.4f below threshold=%.4f "
+                    "(%d/%d bad epochs).",
+                    float(current_qwk),
+                    threshold,
+                    self.bad_epochs,
+                    self.patience,
+                )
+        else:
+            self.bad_epochs = 0
+
+        if self.bad_epochs >= self.patience:
+            if self.init_weights_path and os.path.exists(self.init_weights_path):
+                self.model.load_weights(self.init_weights_path)
+                logger.warning(
+                    "Stage2CollapseGuard triggered: restored stage2 init weights from '%s'.",
+                    self.init_weights_path,
+                )
+            else:
+                logger.warning(
+                    "Stage2CollapseGuard triggered but init weights path is unavailable: '%s'.",
+                    self.init_weights_path,
+                )
+            self.model.stop_training = True
+
 def build_enhanced_callbacks(
     val_dataset: tf.data.Dataset,
     config: Dict,
@@ -684,29 +761,53 @@ def build_enhanced_callbacks(
             verbose=1,
             max_batches=config.get("max_batches", None),
         ),
-        # Save best model by QWK
-        QWKModelCheckpoint(filepath=best_qwk_path, verbose=1),
-        # Early stopping on QWK
-        QWKEarlyStopping(
-            patience=config["early_stopping_patience"],
-            restore_best_weights=True,
-            verbose=1,
-        ),
-        # LR reduction on QWK plateau
-        QWKReduceLROnPlateau(
-            factor=config["lr_reduce_factor"],
-            patience=config["lr_reduce_patience"],
-            min_lr=config["min_lr"],
-            verbose=1,
-        ),
-        # CSV logging
-        keras.callbacks.CSVLogger(config["log_path"], append=False),
-        # Comprehensive diagnostics
-        TrainingDiagnosticsCallback(
-            history_path=config["history_path"],
-            plot_dir=config.get("output_dir", "."),
-        ),
     ]
+
+    # Stage 2 safety guard: abort if QWK collapses far below stage1 baseline.
+    if (
+        config.get("collapse_guard_enabled", False)
+        and config.get("stage1_baseline_qwk") is not None
+        and config.get("stage2_init_weights_path")
+    ):
+        callbacks.append(
+            Stage2QWKCollapseGuard(
+                baseline_qwk=float(config["stage1_baseline_qwk"]),
+                init_weights_path=str(config["stage2_init_weights_path"]),
+                min_ratio=float(config.get("collapse_guard_ratio", 0.70)),
+                min_abs_qwk=float(config.get("collapse_guard_min_abs_qwk", 0.20)),
+                patience=int(config.get("collapse_guard_patience", 2)),
+                start_epoch=1,
+                verbose=1,
+            )
+        )
+
+    callbacks.extend(
+        [
+            # Save best model by QWK
+            QWKModelCheckpoint(filepath=best_qwk_path, verbose=1),
+            # Early stopping on QWK
+            QWKEarlyStopping(
+                patience=config["early_stopping_patience"],
+                restore_best_weights=True,
+                verbose=1,
+            ),
+            # LR reduction on QWK plateau
+            QWKReduceLROnPlateau(
+                factor=config["lr_reduce_factor"],
+                patience=config["lr_reduce_patience"],
+                min_lr=config["min_lr"],
+                verbose=1,
+            ),
+            # CSV logging
+            keras.callbacks.CSVLogger(config["log_path"], append=False),
+            # Comprehensive diagnostics
+            TrainingDiagnosticsCallback(
+                history_path=config["history_path"],
+                plot_dir=config.get("output_dir", "."),
+            ),
+        ]
+    )
+
     return callbacks
 
 
@@ -895,6 +996,35 @@ def train_enhanced(
         callbacks=callbacks,
         verbose=1,
     )
+
+    # Final stage2 guardrail: never keep a model that is worse than stage1 baseline.
+    if (
+        pretrained_weights is not None
+        and cfg.get("stage2_revert_if_worse", True)
+        and cfg.get("stage1_baseline_qwk") is not None
+    ):
+        baseline_qwk = float(cfg["stage1_baseline_qwk"])
+        min_improvement = float(cfg.get("stage2_min_improvement", 0.0))
+        qwk_history = history.history.get("val_qwk", [])
+        best_stage2_qwk = max(qwk_history) if qwk_history else -float("inf")
+
+        if best_stage2_qwk < baseline_qwk + min_improvement:
+            logger.warning(
+                "Stage 2 best val_qwk=%.4f did not beat Stage 1 baseline=%.4f (required +%.4f). "
+                "Restoring stage2 init weights from '%s'.",
+                best_stage2_qwk,
+                baseline_qwk,
+                min_improvement,
+                pretrained_weights,
+            )
+            if os.path.exists(pretrained_weights):
+                model.load_weights(pretrained_weights)
+                history.history["stage2_reverted_to_stage1"] = [1.0]
+            else:
+                logger.warning(
+                    "Could not restore stage2 init weights because file is missing: '%s'.",
+                    pretrained_weights,
+                )
 
     model.save_weights(output_weights)
     logger.info("Saved weights to '%s'.", output_weights)
