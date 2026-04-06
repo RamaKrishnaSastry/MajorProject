@@ -311,11 +311,11 @@ class QWKModelCheckpoint(keras.callbacks.Callback):
         Verbosity level.
     """
 
-    def __init__(self, filepath: str, verbose: int = 1):
+    def __init__(self, filepath: str, verbose: int = 1, initial_best_qwk: float = -np.inf):
         super().__init__()
         self.filepath = filepath
         self.verbose = verbose
-        self.best_qwk: float = -np.inf
+        self.best_qwk: float = float(initial_best_qwk)
 
     def on_epoch_end(self, epoch: int, logs=None):
         logs = logs or {}
@@ -751,6 +751,29 @@ def build_enhanced_callbacks(
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
     best_qwk_path = os.path.join(config["checkpoint_dir"], "best_qwk.weights.h5")
 
+    checkpoint_initial_best_qwk = -np.inf
+    use_stage1_baseline_for_checkpoint = bool(
+        config.get("stage2_checkpoint_use_stage1_baseline", False)
+    )
+    stage1_baseline_qwk = config.get("stage1_baseline_qwk", None)
+    if use_stage1_baseline_for_checkpoint and stage1_baseline_qwk is not None:
+        try:
+            checkpoint_initial_best_qwk = float(stage1_baseline_qwk)
+            logger.info(
+                "Stage 2 checkpoint baseline set to Stage 1 val_qwk=%.4f "
+                "(save only on improvement).",
+                checkpoint_initial_best_qwk,
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid stage1_baseline_qwk=%r; using -inf checkpoint baseline.",
+                stage1_baseline_qwk,
+            )
+    elif stage1_baseline_qwk is not None:
+        logger.info(
+            "Stage 2 checkpoint baseline is -inf (independent from Stage 1)."
+        )
+
     callbacks = [
         LinearWarmupCallback(target_lr=config["learning_rate"], warmup_epochs=5),
         # QWK tracking callback (must run first to populate val_qwk in logs)
@@ -786,7 +809,11 @@ def build_enhanced_callbacks(
     callbacks.extend(
         [
             # Save best model by QWK
-            QWKModelCheckpoint(filepath=best_qwk_path, verbose=1),
+            QWKModelCheckpoint(
+                filepath=best_qwk_path,
+                verbose=1,
+                initial_best_qwk=checkpoint_initial_best_qwk,
+            ),
             # Early stopping on QWK
             QWKEarlyStopping(
                 patience=config["early_stopping_patience"],

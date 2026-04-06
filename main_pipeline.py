@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -92,6 +93,9 @@ DEFAULT_PIPELINE_CONFIG = {
         "collapse_guard_ratio": 0.70,
         "collapse_guard_min_abs_qwk": 0.20,
         "collapse_guard_patience": 2,
+        # If True, stage2 checkpointing saves only when val_qwk beats stage1 baseline.
+        # Default False keeps stage2 checkpoint tracking independent from stage1.
+        "stage2_checkpoint_use_stage1_baseline": False,
     },
     "output_dir": "pipeline_outputs",
     "checkpoint_dir": "pipeline_outputs/checkpoints",
@@ -301,6 +305,9 @@ def stage_training(
             {
                 "stage1_baseline_qwk": stage1_baseline_qwk,
                 "stage2_init_weights_path": pretrained_weights,
+                "stage2_checkpoint_use_stage1_baseline": stage_cfg.get(
+                    "stage2_checkpoint_use_stage1_baseline", False
+                ),
                 "collapse_guard_enabled": stage_cfg.get("collapse_guard_enabled", True),
                 "collapse_guard_ratio": stage_cfg.get("collapse_guard_ratio", 0.70),
                 "collapse_guard_min_abs_qwk": stage_cfg.get("collapse_guard_min_abs_qwk", 0.20),
@@ -496,7 +503,19 @@ def run_pipeline(
 
     best_stage1_weights = os.path.join(cfg["checkpoint_dir"], "stage1", "best_qwk.weights.h5")
     if os.path.exists(best_stage1_weights):
-        stage2_init_weights = best_stage1_weights
+        stage1_qwk = float(metrics1.get("qwk", float("nan")))
+        if np.isfinite(stage1_qwk):
+            stage1_snapshot_name = f"stage1_best_{stage1_qwk:.4f}.weights.h5"
+            stage1_snapshot_path = os.path.join(cfg["checkpoint_dir"], "stage1", stage1_snapshot_name)
+            if os.path.abspath(stage1_snapshot_path) != os.path.abspath(best_stage1_weights):
+                shutil.copy2(best_stage1_weights, stage1_snapshot_path)
+                logger.info(
+                    "Archived Stage 1 best checkpoint as '%s'.",
+                    stage1_snapshot_path,
+                )
+            stage2_init_weights = stage1_snapshot_path
+        else:
+            stage2_init_weights = best_stage1_weights
         logger.info(
             "Stage 2 will start from Stage 1 best full-model checkpoint: '%s'",
             stage2_init_weights,
