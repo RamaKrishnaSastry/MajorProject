@@ -58,12 +58,12 @@ stage1:
 # STAGE 2: FINE-TUNING
 # ============================================================
 stage2:
-  epochs: 40
-  learning_rate: 5.0e-6 # very low — backbone unfreezing needs this
-  early_stopping_patience: 15
+  epochs: 50
+  learning_rate: 1.0e-6 # lower LR for safer full-backbone fine-tuning
+  early_stopping_patience: 20
   lr_reduce_patience: 8
   lr_reduce_factor: 0.3
-  min_lr: 1.0e-8
+  min_lr: 1.0e-9
   ordinal_loss_weighting: true
   focal_loss_gamma: 2.0
   # dr_loss_weight: 0.1 # reintroduce DR signal during fine-tuning (λ=0.1)
