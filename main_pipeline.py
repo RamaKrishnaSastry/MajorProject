@@ -67,7 +67,7 @@ DEFAULT_PIPELINE_CONFIG = {
     "input_shape": [512, 512, 3],
     "num_dme_classes": 3,
     "num_dr_classes": 5,
-    "batch_size": 8,
+    "batch_size": 4,
     "val_split": 0.2,
     "augment_train": True,
     # Stage 1: Initial training
@@ -93,7 +93,7 @@ DEFAULT_PIPELINE_CONFIG = {
         "collapse_guard_enabled": True,
         "collapse_guard_ratio": 0.70,
         "collapse_guard_min_abs_qwk": 0.20,
-        "collapse_guard_patience": 2,
+        "collapse_guard_patience": 15,
         # If True, stage2 checkpointing saves only when val_qwk beats stage1 baseline.
         # Default False keeps stage2 checkpoint tracking independent from stage1.
         "stage2_checkpoint_use_stage1_baseline": False,
