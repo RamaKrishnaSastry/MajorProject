@@ -52,7 +52,9 @@ stage1:
   min_lr: 1.0e-7
   ordinal_loss_weighting: true
   focal_loss_gamma: 2.0
-  # dr_loss_weight: 0.0 # pure DME learning in stage 1 (λ=0)
+  dr_loss_weight: 0.2
+  dr_class_weighting: true
+  dr_class_weight_clip_ratio: 8.0
 
 # ============================================================
 # STAGE 2: FINE-TUNING
@@ -66,8 +68,10 @@ stage2:
   min_lr: 1.0e-9
   ordinal_loss_weighting: true
   focal_loss_gamma: 2.0
+  dr_loss_weight: 0.1
+  dr_class_weighting: true
+  dr_class_weight_clip_ratio: 8.0
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
-  # dr_loss_weight: 0.1 # reintroduce DR signal during fine-tuning (λ=0.1)
 
 # ============================================================
 # MODEL ARCHITECTURE
@@ -89,6 +93,8 @@ model:
 #   1) DME>=0.75 and DR>=0.70
 #   2) DME>=0.75 and DR>=0.65
 #   3) DME>=0.70 and DR>=0.60
+#   4) DME>=0.65 and DR>=0.55
+#   5) DME>=0.60 and DR>=0.50
 # If none are met, thresholds are relaxed by fallback_step each tier.
 joint_selection:
   enabled: true
@@ -96,8 +102,11 @@ joint_selection:
     - [0.75, 0.70]
     - [0.75, 0.65]
     - [0.70, 0.60]
+    - [0.65, 0.55]
+    - [0.60, 0.50]
   fallback_step: 0.05
-  min_threshold: 0.0
+  min_threshold: 0.50
+  dme_floor: 0.70
 
 # ============================================================
 # EVALUATION

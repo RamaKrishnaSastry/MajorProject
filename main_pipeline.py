@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import random
-import shutil
 import time
 import glob
 from pathlib import Path
@@ -79,6 +78,9 @@ DEFAULT_PIPELINE_CONFIG = {
         "lr_reduce_factor": 0.5,
         "min_lr": 1e-7,
         "ordinal_loss_weighting": True,
+        "dr_loss_weight": 0.2,
+        "dr_class_weighting": True,
+        "dr_class_weight_clip_ratio": 8.0,
     },
     # Stage 2: Fine-tuning (after stage 1)
     "stage2": {
@@ -89,6 +91,9 @@ DEFAULT_PIPELINE_CONFIG = {
         "lr_reduce_factor": 0.3,
         "min_lr": 1e-8,
         "ordinal_loss_weighting": True,
+        "dr_loss_weight": 0.1,
+        "dr_class_weighting": True,
+        "dr_class_weight_clip_ratio": 8.0,
         # Abort stage2 if QWK collapses too far below stage1 baseline.
         "collapse_guard_enabled": True,
         "collapse_guard_ratio": 0.70,
@@ -109,6 +114,7 @@ DEFAULT_PIPELINE_CONFIG = {
         "thresholds": [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]],
         "fallback_step": 0.05,
         "min_threshold": 0.0,
+        "dme_floor": 0.70,
     },
 }
 
@@ -302,6 +308,14 @@ def stage_training(
         "min_lr": stage_cfg.get("min_lr", 1e-7),
         "ordinal_loss_weighting": stage_cfg.get("ordinal_loss_weighting", True),
         "focal_loss_gamma": stage_cfg.get("focal_loss_gamma", 2.0),
+        "dr_loss_weight": float(
+            stage_cfg.get(
+                "dr_loss_weight",
+                0.1 if stage_name == "stage2" else 0.2,
+            )
+        ),
+        "dr_class_weighting": bool(stage_cfg.get("dr_class_weighting", True)),
+        "dr_class_weight_clip_ratio": float(stage_cfg.get("dr_class_weight_clip_ratio", 8.0)),
         "max_batches": config.get("max_batches", None),
         "checkpoint_dir": checkpoint_dir,
         "history_path": os.path.join(config["output_dir"], f"history_{stage_name}.json"),
@@ -329,6 +343,10 @@ def stage_training(
             "joint_qwk_min_threshold": stage_cfg.get(
                 "joint_qwk_min_threshold",
                 joint_cfg.get("min_threshold", 0.0),
+            ),
+            "joint_dme_floor": stage_cfg.get(
+                "joint_dme_floor",
+                joint_cfg.get("dme_floor", 0.70),
             ),
         }
     )
@@ -545,6 +563,7 @@ def aggregate_results(
         "best_qwk": -float("inf"),
         "best_stage": None,
         "target_met": False,
+        "selection_mode": "dme_qwk",
     }
 
     joint_cfg = joint_selection_cfg or {}
@@ -591,6 +610,11 @@ def aggregate_results(
             {"dme_qwk_min": float(d), "dr_qwk_min": float(r)} for d, r in ladder
         ]
 
+    if bool(joint_cfg.get("enabled", True)) and best_joint is not None:
+        report["best_stage_by_dme"] = report["best_stage"]
+        report["best_stage"] = best_joint["stage"]
+        report["selection_mode"] = "joint_tiers"
+
     report_path = os.path.join(output_dir, "pipeline_report.json")
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
@@ -599,7 +623,7 @@ def aggregate_results(
     logger.info(
         "\nPipeline Summary:\n  Best DME QWK: %.4f (%s)\n  Target ≥0.80 met: %s",
         report["best_qwk"],
-        report["best_stage"],
+        report.get("best_stage_by_dme", report["best_stage"]),
         "✅ YES" if report["target_met"] else "❌ NO",
     )
     if best_joint is not None:
@@ -610,6 +634,11 @@ def aggregate_results(
             report["best_joint_dr_qwk"],
             report["best_joint_tier_index"] + 1,
         )
+    logger.info(
+        "  Final selected stage (%s): %s",
+        report["selection_mode"],
+        report["best_stage"],
+    )
     return report
 
 
@@ -689,31 +718,32 @@ def run_pipeline(
     all_metrics["stage1"] = metrics1
     logger.info("Stage 1 QWK: %.4f", metrics1["qwk"])
 
-    stage1_selected_path = selected_stage1_ckpt
-    best_stage1_weights = os.path.join(cfg["checkpoint_dir"], "stage1", "best_qwk.weights.h5")
-    if os.path.exists(stage1_selected_path):
-        stage1_qwk = float(metrics1.get("qwk", float("nan")))
-        if np.isfinite(stage1_qwk):
-            stage1_snapshot_name = f"stage1_best_{stage1_qwk:.4f}.weights.h5"
-            stage1_snapshot_path = os.path.join(cfg["checkpoint_dir"], "stage1", stage1_snapshot_name)
-            if os.path.abspath(stage1_snapshot_path) != os.path.abspath(stage1_selected_path):
-                shutil.copy2(stage1_selected_path, stage1_snapshot_path)
-                logger.info(
-                    "Archived Stage 1 best checkpoint as '%s'.",
-                    stage1_snapshot_path,
-                )
-            stage2_init_weights = stage1_snapshot_path
-        else:
-            stage2_init_weights = stage1_selected_path
+    stage1_dir = os.path.join(cfg["checkpoint_dir"], "stage1")
+    stage1_joint_path = os.path.join(stage1_dir, "best_joint.weights.h5")
+    stage1_dme_path = os.path.join(stage1_dir, "best_qwk.weights.h5")
+
+    if os.path.exists(stage1_joint_path):
+        stage2_init_weights = stage1_joint_path
         logger.info(
-            "Stage 2 will start from Stage 1 best full-model checkpoint: '%s'",
+            "Stage 2 will start from Stage 1 JOINT best checkpoint: '%s'",
+            stage2_init_weights,
+        )
+    elif os.path.exists(stage1_dme_path):
+        stage2_init_weights = stage1_dme_path
+        logger.warning(
+            "Stage 1 joint checkpoint not found. Falling back to Stage 1 DME-best checkpoint: '%s'",
+            stage2_init_weights,
+        )
+    elif os.path.exists(selected_stage1_ckpt):
+        stage2_init_weights = selected_stage1_ckpt
+        logger.warning(
+            "Stage 1 named checkpoints are missing. Falling back to selected Stage 1 checkpoint: '%s'",
             stage2_init_weights,
         )
     else:
         stage2_init_weights = weights1
         logger.warning(
-            "Stage 1 selected checkpoint not found at '%s'. Falling back to final Stage 1 weights '%s'.",
-            stage1_selected_path,
+            "No Stage 1 checkpoint found. Falling back to final Stage 1 weights '%s'.",
             stage2_init_weights,
         )
 
@@ -769,12 +799,21 @@ def run_stage2_only(
     train_ds, val_ds, class_weights, _ = stage_data_preparation(csv_path, image_dir, cfg)
 
     stage1_dir = os.path.join(cfg["checkpoint_dir"], "stage1")
+    stage1_joint_ckpt = os.path.join(stage1_dir, "best_joint.weights.h5")
+    stage1_dme_ckpt = os.path.join(stage1_dir, "best_qwk.weights.h5")
     stage1_snapshots = sorted(glob.glob(os.path.join(stage1_dir, "stage1_best_*.weights.h5")))
-    stage2_init_weights = (
-        stage1_snapshots[-1]
-        if stage1_snapshots
-        else os.path.join(stage1_dir, "best_qwk.weights.h5")
-    )
+
+    if os.path.exists(stage1_joint_ckpt):
+        stage2_init_weights = stage1_joint_ckpt
+        logger.info("Stage2-only mode: using Stage 1 JOINT best checkpoint '%s'.", stage2_init_weights)
+    elif os.path.exists(stage1_dme_ckpt):
+        stage2_init_weights = stage1_dme_ckpt
+        logger.warning("Stage2-only mode: joint checkpoint missing; using Stage 1 DME-best '%s'.", stage2_init_weights)
+    elif stage1_snapshots:
+        stage2_init_weights = stage1_snapshots[-1]
+        logger.warning("Stage2-only mode: using latest archived Stage 1 snapshot '%s'.", stage2_init_weights)
+    else:
+        stage2_init_weights = stage1_dme_ckpt
 
     if not os.path.exists(stage2_init_weights):
         raise FileNotFoundError(
