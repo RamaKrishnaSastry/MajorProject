@@ -71,37 +71,39 @@ DEFAULT_PIPELINE_CONFIG = {
     "augment_train": True,
     # Stage 1: Initial training
     "stage1": {
-        "epochs": 30,
-        "learning_rate": 1e-4,
-        "early_stopping_patience": 5,
-        "lr_reduce_patience": 3,
+        "epochs": 40,
+        "learning_rate": 3e-5,
+        "early_stopping_patience": 15,
+        "lr_reduce_patience": 8,
         "lr_reduce_factor": 0.5,
         "min_lr": 1e-7,
         "ordinal_loss_weighting": True,
+        "focal_loss_gamma": 2.0,
         "dr_loss_weight": 0.2,
         "dr_class_weighting": True,
-        "dr_class_weight_clip_ratio": 8.0,
+        "dr_class_weight_clip_ratio": 6.0,
     },
     # Stage 2: Fine-tuning (after stage 1)
     "stage2": {
-        "epochs": 20,
-        "learning_rate": 5e-5,
-        "early_stopping_patience": 5,
-        "lr_reduce_patience": 3,
+        "epochs": 35,
+        "learning_rate": 5e-7,
+        "early_stopping_patience": 10,
+        "lr_reduce_patience": 4,
         "lr_reduce_factor": 0.3,
-        "min_lr": 1e-8,
+        "min_lr": 1e-9,
         "ordinal_loss_weighting": True,
-        "dr_loss_weight": 0.1,
+        "focal_loss_gamma": 2.0,
+        "dr_loss_weight": 0.05,
         "dr_class_weighting": True,
-        "dr_class_weight_clip_ratio": 8.0,
-        # Abort stage2 if QWK collapses too far below stage1 baseline.
+        "dr_class_weight_clip_ratio": 6.0,
+        "stage2_freeze_aspp_bn": True,
+        "stage2_checkpoint_use_stage1_baseline": True,
         "collapse_guard_enabled": True,
-        "collapse_guard_ratio": 0.70,
-        "collapse_guard_min_abs_qwk": 0.20,
-        "collapse_guard_patience": 15,
-        # If True, stage2 checkpointing saves only when val_qwk beats stage1 baseline.
-        # Default False keeps stage2 checkpoint tracking independent from stage1.
-        "stage2_checkpoint_use_stage1_baseline": False,
+        "collapse_guard_ratio": 0.95,
+        "collapse_guard_min_abs_qwk": 0.68,
+        "collapse_guard_patience": 3,
+        "stage2_revert_if_worse": True,
+        "stage2_min_improvement": 0.003,
     },
     "output_dir": "pipeline_outputs",
     "checkpoint_dir": "pipeline_outputs/checkpoints",
@@ -111,9 +113,17 @@ DEFAULT_PIPELINE_CONFIG = {
     # Joint DME+DR selection policy for checkpoints and final stage ranking.
     "joint_selection": {
         "enabled": True,
-        "thresholds": [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]],
-        "fallback_step": 0.05,
-        "min_threshold": 0.0,
+        "thresholds": [
+            [0.70, 0.80],
+            [0.72, 0.78],
+            [0.75, 0.75],
+            [0.70, 0.75],
+            [0.70, 0.72],
+            [0.70, 0.70],
+            [0.68, 0.70],
+        ],
+        "fallback_step": 0.02,
+        "min_threshold": 0.60,
         "dme_floor": 0.70,
     },
 }
@@ -315,7 +325,7 @@ def stage_training(
             )
         ),
         "dr_class_weighting": bool(stage_cfg.get("dr_class_weighting", True)),
-        "dr_class_weight_clip_ratio": float(stage_cfg.get("dr_class_weight_clip_ratio", 8.0)),
+        "dr_class_weight_clip_ratio": float(stage_cfg.get("dr_class_weight_clip_ratio", 6.0)),
         "max_batches": config.get("max_batches", None),
         "checkpoint_dir": checkpoint_dir,
         "history_path": os.path.join(config["output_dir"], f"history_{stage_name}.json"),
@@ -334,15 +344,26 @@ def stage_training(
             ),
             "joint_qwk_thresholds": stage_cfg.get(
                 "joint_qwk_thresholds",
-                joint_cfg.get("thresholds", [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]]),
+                joint_cfg.get(
+                    "thresholds",
+                    [
+                        [0.70, 0.80],
+                        [0.72, 0.78],
+                        [0.75, 0.75],
+                        [0.70, 0.75],
+                        [0.70, 0.72],
+                        [0.70, 0.70],
+                        [0.68, 0.70],
+                    ],
+                ),
             ),
             "joint_qwk_fallback_step": stage_cfg.get(
                 "joint_qwk_fallback_step",
-                joint_cfg.get("fallback_step", 0.05),
+                joint_cfg.get("fallback_step", 0.02),
             ),
             "joint_qwk_min_threshold": stage_cfg.get(
                 "joint_qwk_min_threshold",
-                joint_cfg.get("min_threshold", 0.0),
+                joint_cfg.get("min_threshold", 0.60),
             ),
             "joint_dme_floor": stage_cfg.get(
                 "joint_dme_floor",
@@ -357,14 +378,14 @@ def stage_training(
                 "stage1_baseline_qwk": stage1_baseline_qwk,
                 "stage2_init_weights_path": pretrained_weights,
                 "stage2_checkpoint_use_stage1_baseline": stage_cfg.get(
-                    "stage2_checkpoint_use_stage1_baseline", False
+                    "stage2_checkpoint_use_stage1_baseline", True
                 ),
                 "collapse_guard_enabled": stage_cfg.get("collapse_guard_enabled", True),
-                "collapse_guard_ratio": stage_cfg.get("collapse_guard_ratio", 0.70),
-                "collapse_guard_min_abs_qwk": stage_cfg.get("collapse_guard_min_abs_qwk", 0.20),
-                "collapse_guard_patience": stage_cfg.get("collapse_guard_patience", 2),
+                "collapse_guard_ratio": stage_cfg.get("collapse_guard_ratio", 0.95),
+                "collapse_guard_min_abs_qwk": stage_cfg.get("collapse_guard_min_abs_qwk", 0.68),
+                "collapse_guard_patience": stage_cfg.get("collapse_guard_patience", 3),
                 "stage2_revert_if_worse": stage_cfg.get("stage2_revert_if_worse", True),
-                "stage2_min_improvement": stage_cfg.get("stage2_min_improvement", 0.0),
+                "stage2_min_improvement": stage_cfg.get("stage2_min_improvement", 0.003),
                 "stage2_freeze_aspp_bn": stage_cfg.get("stage2_freeze_aspp_bn", True),
             }
         )
@@ -568,9 +589,20 @@ def aggregate_results(
 
     joint_cfg = joint_selection_cfg or {}
     ladder = _build_joint_threshold_ladder(
-        joint_cfg.get("thresholds", [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]]),
-        fallback_step=float(joint_cfg.get("fallback_step", 0.05)),
-        min_threshold=float(joint_cfg.get("min_threshold", 0.0)),
+        joint_cfg.get(
+            "thresholds",
+            [
+                [0.70, 0.80],
+                [0.72, 0.78],
+                [0.75, 0.75],
+                [0.70, 0.75],
+                [0.70, 0.72],
+                [0.70, 0.70],
+                [0.68, 0.70],
+            ],
+        ),
+        fallback_step=float(joint_cfg.get("fallback_step", 0.02)),
+        min_threshold=float(joint_cfg.get("min_threshold", 0.60)),
     )
     best_joint = None
 

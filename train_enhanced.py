@@ -66,7 +66,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "focal_loss_gamma": 2.0,
     "dr_loss_weight": 0.2,
     "dr_class_weighting": True,
-    "dr_class_weight_clip_ratio": 8.0,
+    "dr_class_weight_clip_ratio": 6.0,
     "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
     # Stage2 safety: if best stage2 QWK does not beat stage1 baseline,
@@ -77,9 +77,17 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "stage2_freeze_aspp_bn": True,
     # Joint DME+DR checkpoint policy.
     "joint_checkpoint_enabled": True,
-    "joint_qwk_thresholds": [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]],
-    "joint_qwk_fallback_step": 0.05,
-    "joint_qwk_min_threshold": 0.0,
+    "joint_qwk_thresholds": [
+        [0.70, 0.80],
+        [0.72, 0.78],
+        [0.75, 0.75],
+        [0.70, 0.75],
+        [0.70, 0.72],
+        [0.70, 0.70],
+        [0.68, 0.70],
+    ],
+    "joint_qwk_fallback_step": 0.02,
+    "joint_qwk_min_threshold": 0.60,
     "joint_dme_floor": 0.70,
 }
 
@@ -1138,7 +1146,7 @@ def build_enhanced_callbacks(
 
     checkpoint_initial_best_qwk = -np.inf
     use_stage1_baseline_for_checkpoint = bool(
-        config.get("stage2_checkpoint_use_stage1_baseline", False)
+        config.get("stage2_checkpoint_use_stage1_baseline", True)
     )
     stage1_baseline_qwk = config.get("stage1_baseline_qwk", None)
     if use_stage1_baseline_for_checkpoint and stage1_baseline_qwk is not None:
@@ -1175,9 +1183,20 @@ def build_enhanced_callbacks(
 
     if bool(config.get("joint_checkpoint_enabled", True)):
         joint_thresholds = _build_joint_qwk_threshold_ladder(
-            config.get("joint_qwk_thresholds", [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]]),
-            fallback_step=float(config.get("joint_qwk_fallback_step", 0.05)),
-            min_threshold=float(config.get("joint_qwk_min_threshold", 0.0)),
+            config.get(
+                "joint_qwk_thresholds",
+                [
+                    [0.70, 0.80],
+                    [0.72, 0.78],
+                    [0.75, 0.75],
+                    [0.70, 0.75],
+                    [0.70, 0.72],
+                    [0.70, 0.70],
+                    [0.68, 0.70],
+                ],
+            ),
+            fallback_step=float(config.get("joint_qwk_fallback_step", 0.02)),
+            min_threshold=float(config.get("joint_qwk_min_threshold", 0.60)),
         )
         dme_floor = float(config.get("joint_dme_floor", 0.70))
         callbacks.append(
@@ -1204,9 +1223,9 @@ def build_enhanced_callbacks(
             Stage2QWKCollapseGuard(
                 baseline_qwk=float(config["stage1_baseline_qwk"]),
                 init_weights_path=str(config["stage2_init_weights_path"]),
-                min_ratio=float(config.get("collapse_guard_ratio", 0.70)),
-                min_abs_qwk=float(config.get("collapse_guard_min_abs_qwk", 0.20)),
-                patience=int(config.get("collapse_guard_patience", 2)),
+                min_ratio=float(config.get("collapse_guard_ratio", 0.95)),
+                min_abs_qwk=float(config.get("collapse_guard_min_abs_qwk", 0.68)),
+                patience=int(config.get("collapse_guard_patience", 3)),
                 start_epoch=1,
                 verbose=1,
             )
@@ -1484,7 +1503,7 @@ def train_enhanced(
             )
         dr_class_weights_for_loss = compute_balanced_class_weights_from_counts(
             dr_class_counts_cache,
-            clip_ratio=cfg.get("dr_class_weight_clip_ratio", 8.0),
+            clip_ratio=cfg.get("dr_class_weight_clip_ratio", 6.0),
         )
         if dr_class_weights_for_loss:
             logger.info("Computed DR loss class weights from train split: %s", dr_class_weights_for_loss)

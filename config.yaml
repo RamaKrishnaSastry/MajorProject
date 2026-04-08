@@ -54,24 +54,31 @@ stage1:
   focal_loss_gamma: 2.0
   dr_loss_weight: 0.2
   dr_class_weighting: true
-  dr_class_weight_clip_ratio: 8.0
+  dr_class_weight_clip_ratio: 6.0
 
 # ============================================================
 # STAGE 2: FINE-TUNING
 # ============================================================
 stage2:
-  epochs: 50
-  learning_rate: 1.0e-6 # lower LR for safer full-backbone fine-tuning
-  early_stopping_patience: 20
-  lr_reduce_patience: 8
+  epochs: 35
+  learning_rate: 5.0e-7 # more conservative Stage 2 LR to reduce oscillation
+  early_stopping_patience: 10
+  lr_reduce_patience: 4
   lr_reduce_factor: 0.3
   min_lr: 1.0e-9
   ordinal_loss_weighting: true
   focal_loss_gamma: 2.0
-  dr_loss_weight: 0.1
+  dr_loss_weight: 0.05
   dr_class_weighting: true
-  dr_class_weight_clip_ratio: 8.0
+  dr_class_weight_clip_ratio: 6.0
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
+  stage2_checkpoint_use_stage1_baseline: true
+  collapse_guard_enabled: true
+  collapse_guard_ratio: 0.95
+  collapse_guard_min_abs_qwk: 0.68
+  collapse_guard_patience: 3
+  stage2_revert_if_worse: true
+  stage2_min_improvement: 0.003
 
 # ============================================================
 # MODEL ARCHITECTURE
@@ -90,22 +97,26 @@ model:
 # ============================================================
 # Best weights are chosen by a strict-to-relaxed DME/DR QWK ladder.
 # Default tiers (highest priority first):
-#   1) DME>=0.75 and DR>=0.70
-#   2) DME>=0.75 and DR>=0.65
-#   3) DME>=0.70 and DR>=0.60
-#   4) DME>=0.65 and DR>=0.55
-#   5) DME>=0.60 and DR>=0.50
+#   1) DME>=0.70 and DR>=0.80  (primary project target)
+#   2) DME>=0.72 and DR>=0.78
+#   3) DME>=0.75 and DR>=0.75
+#   4) DME>=0.70 and DR>=0.75
+#   5) DME>=0.70 and DR>=0.72
+#   6) DME>=0.70 and DR>=0.70
+#   7) DME>=0.68 and DR>=0.70
 # If none are met, thresholds are relaxed by fallback_step each tier.
 joint_selection:
   enabled: true
   thresholds:
-    - [0.75, 0.70]
-    - [0.75, 0.65]
-    - [0.70, 0.60]
-    - [0.65, 0.55]
-    - [0.60, 0.50]
-  fallback_step: 0.05
-  min_threshold: 0.50
+    - [0.70, 0.80]
+    - [0.72, 0.78]
+    - [0.75, 0.75]
+    - [0.70, 0.75]
+    - [0.70, 0.72]
+    - [0.70, 0.70]
+    - [0.68, 0.70]
+  fallback_step: 0.02
+  min_threshold: 0.60
   dme_floor: 0.70
 
 # ============================================================
