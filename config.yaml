@@ -89,6 +89,8 @@ model:
 #   1) DME>=0.75 and DR>=0.70
 #   2) DME>=0.75 and DR>=0.65
 #   3) DME>=0.70 and DR>=0.60
+#   4) DME>=0.65 and DR>=0.55
+#   5) DME>=0.60 and DR>=0.50
 # If none are met, thresholds are relaxed by fallback_step each tier.
 joint_selection:
   enabled: true
@@ -96,8 +98,10 @@ joint_selection:
     - [0.75, 0.70]
     - [0.75, 0.65]
     - [0.70, 0.60]
+    - [0.65, 0.55]
+    - [0.60, 0.50]
   fallback_step: 0.05
-  min_threshold: 0.0
+  min_threshold: 0.50
 
 # ============================================================
 # EVALUATION

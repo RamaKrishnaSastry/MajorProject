@@ -432,11 +432,18 @@ class QWKModelCheckpoint(keras.callbacks.Callback):
         Verbosity level.
     """
 
-    def __init__(self, filepath: str, verbose: int = 1, initial_best_qwk: float = -np.inf):
+    def __init__(
+        self,
+        filepath: str,
+        verbose: int = 1,
+        initial_best_qwk: float = -np.inf,
+        alias_filepaths: Optional[List[str]] = None,
+    ):
         super().__init__()
         self.filepath = filepath
         self.verbose = verbose
         self.best_qwk: float = float(initial_best_qwk)
+        self.alias_filepaths = alias_filepaths or []
 
     def on_epoch_end(self, epoch: int, logs=None):
         logs = logs or {}
@@ -450,6 +457,34 @@ class QWKModelCheckpoint(keras.callbacks.Callback):
                     self.best_qwk, current_qwk, self.filepath,
                 )
             self.best_qwk = current_qwk
+            self.model.save_weights(self.filepath)
+            for alias_path in self.alias_filepaths:
+                self.model.save_weights(alias_path)
+
+
+class DRQWKModelCheckpoint(keras.callbacks.Callback):
+    """Save model weights when val_dr_qwk improves."""
+
+    def __init__(self, filepath: str, verbose: int = 1, initial_best_dr_qwk: float = -np.inf):
+        super().__init__()
+        self.filepath = filepath
+        self.verbose = verbose
+        self.best_dr_qwk: float = float(initial_best_dr_qwk)
+
+    def on_epoch_end(self, epoch: int, logs=None):
+        logs = logs or {}
+        current_dr_qwk = logs.get("val_dr_qwk", None)
+        if current_dr_qwk is None:
+            return
+        if float(current_dr_qwk) > self.best_dr_qwk:
+            if self.verbose:
+                logger.info(
+                    "DRQWKModelCheckpoint: val_dr_qwk improved %.4f → %.4f, saving to '%s'",
+                    self.best_dr_qwk,
+                    float(current_dr_qwk),
+                    self.filepath,
+                )
+            self.best_dr_qwk = float(current_dr_qwk)
             self.model.save_weights(self.filepath)
 
 
@@ -543,19 +578,21 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
             return
 
         candidate = self._make_candidate(float(dme_qwk), float(dr_qwk))
+        tier_idx = int(candidate["tier_index"])
+        if tier_idx < len(self.thresholds):
+            dme_t, dr_t = self.thresholds[tier_idx]
+            tier_label = f"tier={tier_idx+1} (dme>={dme_t:.2f}, dr>={dr_t:.2f})"
+        else:
+            tier_label = "tier=unmatched"
+
+        saved = False
         if self.best is None or self._is_better(candidate, self.best):
             previous = self.best
             self.best = candidate
             self.model.save_weights(self.filepath)
+            saved = True
 
             if self.verbose:
-                tier_idx = int(candidate["tier_index"])
-                if tier_idx < len(self.thresholds):
-                    dme_t, dr_t = self.thresholds[tier_idx]
-                    tier_label = f"tier={tier_idx+1} (dme>={dme_t:.2f}, dr>={dr_t:.2f})"
-                else:
-                    tier_label = "tier=unmatched"
-
                 if previous is None:
                     logger.info(
                         "JointQWKCheckpoint: saved initial best (%s, dme=%.4f, dr=%.4f) to '%s'.",
@@ -573,6 +610,16 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
                         candidate["harmonic"],
                         self.filepath,
                     )
+
+        if self.verbose:
+            logger.info(
+                "JointCheckpoint: epoch=%d dme=%.4f dr=%.4f %s -> %s",
+                epoch + 1,
+                float(dme_qwk),
+                float(dr_qwk),
+                tier_label,
+                "SAVED" if saved else "not saved",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -997,6 +1044,8 @@ def build_enhanced_callbacks(
     """
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
     best_qwk_path = os.path.join(config["checkpoint_dir"], "best_qwk.weights.h5")
+    best_dme_path = os.path.join(config["checkpoint_dir"], "best_dme.weights.h5")
+    best_dr_path = os.path.join(config["checkpoint_dir"], "best_dr.weights.h5")
     best_joint_path = os.path.join(config["checkpoint_dir"], "best_joint.weights.h5")
 
     checkpoint_initial_best_qwk = -np.inf
@@ -1079,6 +1128,12 @@ def build_enhanced_callbacks(
                 filepath=best_qwk_path,
                 verbose=1,
                 initial_best_qwk=checkpoint_initial_best_qwk,
+                alias_filepaths=[best_dme_path],
+            ),
+            # Save best model by DR QWK
+            DRQWKModelCheckpoint(
+                filepath=best_dr_path,
+                verbose=1,
             ),
             # Early stopping on QWK
             QWKEarlyStopping(
