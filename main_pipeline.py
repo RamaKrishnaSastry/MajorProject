@@ -317,6 +317,7 @@ def stage_training(
                 "collapse_guard_patience": stage_cfg.get("collapse_guard_patience", 2),
                 "stage2_revert_if_worse": stage_cfg.get("stage2_revert_if_worse", True),
                 "stage2_min_improvement": stage_cfg.get("stage2_min_improvement", 0.0),
+                "stage2_freeze_aspp_bn": stage_cfg.get("stage2_freeze_aspp_bn", True),
             }
         )
 

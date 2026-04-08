@@ -70,6 +70,8 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     # restore stage1-init weights before returning/saving.
     "stage2_revert_if_worse": True,
     "stage2_min_improvement": 0.0,
+    # Stage2 BN control: freeze ASPP BN with backbone BN to reduce adaptation cost.
+    "stage2_freeze_aspp_bn": True,
 }
 
 
@@ -896,16 +898,24 @@ def build_enhanced_callbacks(
 def _freeze_backbone_batchnorm_layers(
     model: keras.Model,
     backbone_layer_name: str = "resnet50_conv4_backbone",
+    freeze_aspp_bn: bool = True,
 ) -> int:
-    """Freeze BatchNorm layers inside backbone only and return the count."""
+    """Freeze BatchNorm layers inside backbone (and optionally ASPP)."""
     count = 0
+    stack = []
     try:
-        backbone = model.get_layer(backbone_layer_name)
+        stack.append(model.get_layer(backbone_layer_name))
     except Exception as e:
         logger.warning("Could not locate backbone layer '%s': %s", backbone_layer_name, e)
+
+    if freeze_aspp_bn:
+        for layer in model.layers:
+            if layer.name.startswith("aspp_"):
+                stack.append(layer)
+
+    if not stack:
         return 0
 
-    stack = [backbone]
     seen = set()
 
     while stack:
@@ -1065,11 +1075,16 @@ def train_enhanced(
             try:
                 backbone_layer = model.get_layer("resnet50_conv4_backbone")
                 backbone_layer.trainable = True
-                bn_frozen = _freeze_backbone_batchnorm_layers(model)
+                freeze_aspp_bn = bool(cfg.get("stage2_freeze_aspp_bn", True))
+                bn_frozen = _freeze_backbone_batchnorm_layers(
+                    model,
+                    freeze_aspp_bn=freeze_aspp_bn,
+                )
                 trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
                 logger.info(
-                    "✅ Stage 2: Backbone UNFROZEN with %d backbone BN layers frozen (ASPP BN remains trainable). Trainable params: %d",
+                    "✅ Stage 2: Backbone UNFROZEN with %d BN layers frozen (freeze_aspp_bn=%s). Trainable params: %d",
                     bn_frozen,
+                    freeze_aspp_bn,
                     trainable_count,
                 )
             except Exception as e:
