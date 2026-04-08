@@ -304,7 +304,7 @@ def evaluate_dr_grading(
     output_dir: str,
     num_dr_classes: int = 5,
 ) -> Dict:
-    """Evaluate DR regression head by converting outputs to ordinal grades.
+    """Evaluate DR head by converting outputs to ordinal grades.
 
     Parameters
     ----------
@@ -345,12 +345,27 @@ def evaluate_dr_grading(
 
     for batch_x, batch_y in val_ds:
         preds = model(batch_x, training=False)
-        dr_out = _extract_dr_prediction(preds).numpy().flatten()
+        dr_out = _extract_dr_prediction(preds).numpy()
+        dr_gt = _extract_dr_target(batch_y).numpy()
 
-        dr_gt = _extract_dr_target(batch_y).numpy().flatten()
+        # Support both softmax DR classification and legacy scalar regression.
+        if dr_out.ndim > 1 and dr_out.shape[-1] > 1:
+            dr_pred_grades = np.argmax(dr_out, axis=-1).astype(int)
+        else:
+            dr_pred_grades = np.clip(
+                np.round(dr_out.reshape(-1)).astype(int),
+                0,
+                num_dr_classes - 1,
+            )
 
-        dr_pred_grades = np.clip(np.round(dr_out).astype(int), 0, num_dr_classes - 1)
-        dr_true_grades = np.clip(np.round(dr_gt).astype(int), 0, num_dr_classes - 1)
+        if dr_gt.ndim > 1 and dr_gt.shape[-1] > 1:
+            dr_true_grades = np.argmax(dr_gt, axis=-1).astype(int)
+        else:
+            dr_true_grades = np.clip(
+                np.round(dr_gt.reshape(-1)).astype(int),
+                0,
+                num_dr_classes - 1,
+            )
 
         dr_true_all.extend(dr_true_grades.tolist())
         dr_pred_all.extend(dr_pred_grades.tolist())

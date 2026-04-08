@@ -714,25 +714,35 @@ if _TF_AVAILABLE:
                         if self.compute_dr_metrics and dr_labels is not None and dr_preds is not None:
                             try:
                                 try:
-                                    dr_true_raw = dr_labels.numpy().reshape(-1)
+                                    dr_true_arr = dr_labels.numpy()
                                 except (AttributeError, TypeError):
-                                    dr_true_raw = np.asarray(dr_labels).reshape(-1)
+                                    dr_true_arr = np.asarray(dr_labels)
 
                                 try:
-                                    dr_pred_raw = dr_preds.numpy().reshape(-1)
+                                    dr_pred_arr = dr_preds.numpy()
                                 except (AttributeError, TypeError):
-                                    dr_pred_raw = np.asarray(dr_preds).reshape(-1)
+                                    dr_pred_arr = np.asarray(dr_preds)
 
-                                dr_true_grades = np.clip(
-                                    np.rint(dr_true_raw).astype(int),
-                                    0,
-                                    self.dr_num_classes - 1,
-                                )
-                                dr_pred_grades = np.clip(
-                                    np.rint(dr_pred_raw).astype(int),
-                                    0,
-                                    self.dr_num_classes - 1,
-                                )
+                                # Support both regression shape (N,1) and softmax shape (N,C).
+                                if dr_true_arr.ndim > 1 and dr_true_arr.shape[-1] > 1:
+                                    dr_true_grades = np.argmax(dr_true_arr, axis=-1).astype(int)
+                                else:
+                                    dr_true_raw = dr_true_arr.reshape(-1)
+                                    dr_true_grades = np.clip(
+                                        np.rint(dr_true_raw).astype(int),
+                                        0,
+                                        self.dr_num_classes - 1,
+                                    )
+
+                                if dr_pred_arr.ndim > 1 and dr_pred_arr.shape[-1] > 1:
+                                    dr_pred_grades = np.argmax(dr_pred_arr, axis=-1).astype(int)
+                                else:
+                                    dr_pred_raw = dr_pred_arr.reshape(-1)
+                                    dr_pred_grades = np.clip(
+                                        np.rint(dr_pred_raw).astype(int),
+                                        0,
+                                        self.dr_num_classes - 1,
+                                    )
 
                                 all_true_dr.append(dr_true_grades)
                                 all_pred_dr.append(dr_pred_grades)

@@ -174,16 +174,17 @@ def build_aspp(
 
 
 # ---------------------------------------------------------------------------
-# DR head (Regression)
+# DR head (Classification)
 # ---------------------------------------------------------------------------
 
-def build_dr_head(x: tf.Tensor, dropout_rate: float = 0.5) -> tf.Tensor:
-    """Build the Diabetic Retinopathy (DR) regression head.
+def build_dr_head(
+    x: tf.Tensor,
+    num_classes: int = 5,
+    dropout_rate: float = 0.5,
+) -> tf.Tensor:
+    """Build the Diabetic Retinopathy (DR) classification head.
 
-    Outputs a single non-negative scalar representing DR severity (0-4 scale).
-
-    Keeping regression (not classification) preserves compatibility with
-    EyePACS-pretrained backbone weights, which were trained with this head.
+    Outputs a softmax distribution over DR grades 0..4.
 
     Parameters
     ----------
@@ -193,12 +194,12 @@ def build_dr_head(x: tf.Tensor, dropout_rate: float = 0.5) -> tf.Tensor:
     Returns
     -------
     tf.Tensor
-        DR severity output tensor (1 value, ReLU activation).
+        DR grade probability distribution.
     """
     x = layers.GlobalAveragePooling2D(name="dr_gap")(x)
     x = layers.Dense(256, activation="relu", name="dr_fc1")(x)
     x = layers.Dropout(dropout_rate, name="dr_dropout")(x)
-    x = layers.Dense(1, activation="relu", name="dr_output")(x)
+    x = layers.Dense(num_classes, activation="softmax", name="dr_output")(x)
     return x
 
 
@@ -240,6 +241,7 @@ def build_model(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     backbone_weights: str = "imagenet",
     num_dme_classes: int = 3,
+    num_dr_classes: int = 5,
     aspp_filters: int = 256,
     dropout_rate: float = 0.5,
     trainable: bool = True,
@@ -250,7 +252,7 @@ def build_model(
     Architecture:
     ``Input → Backbone (ResNet50) → ASPP → DR head + DME head``
 
-    DR head: regression (ReLU, trained on 0-4 grade scale).
+    DR head: 5-class softmax classification (0..4).
     DME head: 3-class softmax (0=No DME, 1=Mild, 2=Moderate).
 
     Parameters
@@ -292,7 +294,11 @@ def build_model(
     aspp_out = build_aspp(features, filters=aspp_filters)
     logger.info("✅ ASPP module added")
     # DR head (regression – compatible with EyePACS pre-trained weights)
-    dr_out = build_dr_head(aspp_out, dropout_rate=dropout_rate)
+    dr_out = build_dr_head(
+        aspp_out,
+        num_classes=num_dr_classes,
+        dropout_rate=dropout_rate,
+    )
 
     # DME head (3-class classification)
     dme_out = build_dme_head(
@@ -327,6 +333,7 @@ def build_model_dme_tuning(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     pretrained_weights: Optional[str] = None,
     num_dme_classes: int = 3,
+    num_dr_classes: int = 5,
     aspp_filters: int = 256,
     dropout_rate: float = 0.5,
     backbone_weights_path: Optional[str] = None,
@@ -360,6 +367,7 @@ def build_model_dme_tuning(
         input_shape=input_shape,
         backbone_weights="imagenet",
         num_dme_classes=num_dme_classes,
+        num_dr_classes=num_dr_classes,
         aspp_filters=aspp_filters,
         dropout_rate=dropout_rate,
         trainable=True,  # Start with all trainable
