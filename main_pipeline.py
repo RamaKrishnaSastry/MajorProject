@@ -78,6 +78,9 @@ DEFAULT_PIPELINE_CONFIG = {
         "lr_reduce_factor": 0.5,
         "min_lr": 1e-7,
         "ordinal_loss_weighting": True,
+        "dr_loss_weight": 0.2,
+        "dr_class_weighting": True,
+        "dr_class_weight_clip_ratio": 8.0,
     },
     # Stage 2: Fine-tuning (after stage 1)
     "stage2": {
@@ -88,6 +91,9 @@ DEFAULT_PIPELINE_CONFIG = {
         "lr_reduce_factor": 0.3,
         "min_lr": 1e-8,
         "ordinal_loss_weighting": True,
+        "dr_loss_weight": 0.1,
+        "dr_class_weighting": True,
+        "dr_class_weight_clip_ratio": 8.0,
         # Abort stage2 if QWK collapses too far below stage1 baseline.
         "collapse_guard_enabled": True,
         "collapse_guard_ratio": 0.70,
@@ -108,6 +114,7 @@ DEFAULT_PIPELINE_CONFIG = {
         "thresholds": [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]],
         "fallback_step": 0.05,
         "min_threshold": 0.0,
+        "dme_floor": 0.70,
     },
 }
 
@@ -301,6 +308,14 @@ def stage_training(
         "min_lr": stage_cfg.get("min_lr", 1e-7),
         "ordinal_loss_weighting": stage_cfg.get("ordinal_loss_weighting", True),
         "focal_loss_gamma": stage_cfg.get("focal_loss_gamma", 2.0),
+        "dr_loss_weight": float(
+            stage_cfg.get(
+                "dr_loss_weight",
+                0.1 if stage_name == "stage2" else 0.2,
+            )
+        ),
+        "dr_class_weighting": bool(stage_cfg.get("dr_class_weighting", True)),
+        "dr_class_weight_clip_ratio": float(stage_cfg.get("dr_class_weight_clip_ratio", 8.0)),
         "max_batches": config.get("max_batches", None),
         "checkpoint_dir": checkpoint_dir,
         "history_path": os.path.join(config["output_dir"], f"history_{stage_name}.json"),
@@ -328,6 +343,10 @@ def stage_training(
             "joint_qwk_min_threshold": stage_cfg.get(
                 "joint_qwk_min_threshold",
                 joint_cfg.get("min_threshold", 0.0),
+            ),
+            "joint_dme_floor": stage_cfg.get(
+                "joint_dme_floor",
+                joint_cfg.get("dme_floor", 0.70),
             ),
         }
     )

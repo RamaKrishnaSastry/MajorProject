@@ -64,6 +64,9 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     # Focal loss gamma: 0 = standard CE, 2.0 = standard focal loss.
     # Higher gamma reduces gradient for easy majority-class samples.
     "focal_loss_gamma": 2.0,
+    "dr_loss_weight": 0.2,
+    "dr_class_weighting": True,
+    "dr_class_weight_clip_ratio": 8.0,
     "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
     # Stage2 safety: if best stage2 QWK does not beat stage1 baseline,
@@ -77,6 +80,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "joint_qwk_thresholds": [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]],
     "joint_qwk_fallback_step": 0.05,
     "joint_qwk_min_threshold": 0.0,
+    "joint_dme_floor": 0.70,
 }
 
 
@@ -236,6 +240,69 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         elif not isinstance(class_weights, dict):
             class_weights = None
         return cls(**config, class_weights=class_weights)
+
+
+class DRWeightedCategoricalCrossEntropy(keras.losses.Loss):
+    """Class-weighted categorical cross-entropy for DR head."""
+
+    def __init__(self, num_classes=5, class_weights=None, **kwargs):
+        super().__init__(**kwargs)
+        self.num_classes = num_classes
+        if class_weights is not None:
+            self.class_weights = tf.constant(
+                [class_weights.get(i, 1.0) for i in range(num_classes)],
+                dtype=tf.float32,
+            )
+        else:
+            self.class_weights = tf.ones(num_classes, dtype=tf.float32)
+
+    def call(self, y_true, y_pred):
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
+        ce = -tf.reduce_sum(y_true * tf.math.log(y_pred), axis=-1)
+        y_true_class = tf.argmax(y_true, axis=1)
+        sample_weights = tf.gather(self.class_weights, y_true_class)
+        return tf.reduce_mean(ce * sample_weights)
+
+    def get_config(self):
+        config = super().get_config()
+        weights_list = None
+        try:
+            weights_list = self.class_weights.numpy().tolist()
+        except Exception:
+            weights_list = None
+        config.update({
+            "num_classes": self.num_classes,
+            "class_weights": weights_list,
+        })
+        return config
+
+
+def compute_balanced_class_weights_from_counts(
+    counts: np.ndarray,
+    clip_ratio: Optional[float] = 8.0,
+) -> Optional[Dict[int, float]]:
+    """Compute inverse-frequency class weights with optional max/min clipping."""
+    if counts is None:
+        return None
+    counts = np.asarray(counts, dtype=np.float64)
+    if counts.ndim != 1 or counts.size == 0:
+        return None
+
+    total = float(np.sum(counts))
+    n_classes = int(counts.size)
+    if total <= 0 or n_classes <= 0:
+        return None
+
+    safe_counts = np.maximum(counts, 1.0)
+    weights = total / (n_classes * safe_counts)
+    weights = weights / np.mean(weights)
+
+    if clip_ratio is not None and clip_ratio > 1.0:
+        min_w = float(np.min(weights))
+        max_w = min_w * float(clip_ratio)
+        weights = np.clip(weights, min_w, max_w)
+
+    return {i: float(weights[i]) for i in range(n_classes)}
 
 
 def _extract_dme_labels(batch_labels):
@@ -534,11 +601,13 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
         self,
         filepath: str,
         thresholds: List[Tuple[float, float]],
+        dme_floor: float = 0.0,
         verbose: int = 1,
     ):
         super().__init__()
         self.filepath = filepath
         self.thresholds = thresholds
+        self.dme_floor = float(dme_floor)
         self.verbose = verbose
         self.best = None
 
@@ -577,7 +646,11 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
         if dme_qwk is None or dr_qwk is None:
             return
 
-        candidate = self._make_candidate(float(dme_qwk), float(dr_qwk))
+        dme_value = float(dme_qwk)
+        dr_value = float(dr_qwk)
+        blocked_by_floor = dme_value < self.dme_floor
+
+        candidate = self._make_candidate(dme_value, dr_value)
         tier_idx = int(candidate["tier_index"])
         if tier_idx < len(self.thresholds):
             dme_t, dr_t = self.thresholds[tier_idx]
@@ -586,7 +659,7 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
             tier_label = "tier=unmatched"
 
         saved = False
-        if self.best is None or self._is_better(candidate, self.best):
+        if not blocked_by_floor and (self.best is None or self._is_better(candidate, self.best)):
             previous = self.best
             self.best = candidate
             self.model.save_weights(self.filepath)
@@ -613,12 +686,13 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
 
         if self.verbose:
             logger.info(
-                "JointCheckpoint: epoch=%d dme=%.4f dr=%.4f %s -> %s",
+                "JointCheckpoint: epoch=%d dme=%.4f dr=%.4f %s floor=%.2f -> %s",
                 epoch + 1,
-                float(dme_qwk),
-                float(dr_qwk),
+                dme_value,
+                dr_value,
                 tier_label,
-                "SAVED" if saved else "not saved",
+                self.dme_floor,
+                "SAVED" if saved else ("blocked by dme_floor" if blocked_by_floor else "not saved"),
             )
 
 
@@ -853,8 +927,11 @@ def compile_model_enhanced(
     num_dme_classes: int = 3,
     num_dr_classes: int = 5,
     class_weights: Optional[Dict[int, float]] = None,
+    dr_class_weights: Optional[Dict[int, float]] = None,
     ordinal_loss_weighting: bool = True,
     focal_loss_gamma: float = 2.0,
+    dr_loss_weight: float = 0.2,
+    dr_class_weighting: bool = True,
 ) -> keras.Model:
     """Compile with ordinal + class weighting baked into loss."""
     
@@ -875,14 +952,25 @@ def compile_model_enhanced(
     else:
         dme_loss = "categorical_crossentropy"
 
+    if dr_class_weighting and dr_class_weights:
+        dr_loss = DRWeightedCategoricalCrossEntropy(
+            num_classes=num_dr_classes,
+            class_weights=dr_class_weights,
+        )
+        logger.info("DR class-weighted CE enabled with weights: %s", dr_class_weights)
+    else:
+        dr_loss = "categorical_crossentropy"
+        if dr_class_weighting:
+            logger.warning("DR class weighting requested but unavailable; falling back to standard CE.")
+
     model.compile(
         optimizer=optimizer,
         loss={
-            "dr_output": "categorical_crossentropy",
+            "dr_output": dr_loss,
             "dme_risk": dme_loss,
         },
         loss_weights={
-            "dr_output": 0.2,
+            "dr_output": float(dr_loss_weight),
             "dme_risk": 1.0,
         },
         metrics={
@@ -1091,16 +1179,19 @@ def build_enhanced_callbacks(
             fallback_step=float(config.get("joint_qwk_fallback_step", 0.05)),
             min_threshold=float(config.get("joint_qwk_min_threshold", 0.0)),
         )
+        dme_floor = float(config.get("joint_dme_floor", 0.70))
         callbacks.append(
             JointQWKModelCheckpoint(
                 filepath=best_joint_path,
                 thresholds=joint_thresholds,
+                dme_floor=dme_floor,
                 verbose=1,
             )
         )
         logger.info(
-            "JointQWKCheckpoint enabled with threshold ladder: %s",
+            "JointQWKCheckpoint enabled with threshold ladder=%s and dme_floor=%.2f",
             [tuple(np.round(t, 3)) for t in joint_thresholds],
+            dme_floor,
         )
 
     # Stage 2 safety guard: abort if QWK collapses far below stage1 baseline.
@@ -1220,6 +1311,8 @@ def train_enhanced(
 
     cfg = {**DEFAULT_ENHANCED_CONFIG, **(config or {})}
     logger.info("Building enhanced model …")
+    dr_class_counts_cache: Optional[np.ndarray] = None
+    dr_class_weights_for_loss: Optional[Dict[int, float]] = None
 
     if use_dme_tuning:
         logger.info("Stage 2: DME head fine-tuning (backbone frozen)")
@@ -1307,6 +1400,7 @@ def train_enhanced(
                     train_ds,
                     num_classes=int(cfg.get("num_dr_classes", 5)),
                 )
+                dr_class_counts_cache = dr_class_counts
                 if dr_class_counts is None:
                     raise ValueError("Training class counts unavailable for DR bias initialization.")
                 dr_class_counts = dr_class_counts.astype(np.float32)
@@ -1382,14 +1476,30 @@ def train_enhanced(
             except Exception as e:
                 logger.warning("Could not unfreeze backbone for Stage 2: %s", e)
 
+    if bool(cfg.get("dr_class_weighting", True)):
+        if dr_class_counts_cache is None:
+            dr_class_counts_cache = compute_dataset_dr_class_counts(
+                train_ds,
+                num_classes=int(cfg.get("num_dr_classes", 5)),
+            )
+        dr_class_weights_for_loss = compute_balanced_class_weights_from_counts(
+            dr_class_counts_cache,
+            clip_ratio=cfg.get("dr_class_weight_clip_ratio", 8.0),
+        )
+        if dr_class_weights_for_loss:
+            logger.info("Computed DR loss class weights from train split: %s", dr_class_weights_for_loss)
+
     model = compile_model_enhanced(
         model,
         learning_rate=cfg["learning_rate"],
         num_dme_classes=cfg["num_dme_classes"],
         num_dr_classes=cfg.get("num_dr_classes", 5),
         class_weights=class_weights,
+        dr_class_weights=dr_class_weights_for_loss,
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
         focal_loss_gamma=cfg.get("focal_loss_gamma", 2.0),
+        dr_loss_weight=float(cfg.get("dr_loss_weight", 0.2)),
+        dr_class_weighting=bool(cfg.get("dr_class_weighting", True)),
     )
 
     callbacks = build_enhanced_callbacks(val_ds, cfg)
