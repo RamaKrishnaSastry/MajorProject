@@ -103,6 +103,13 @@ DEFAULT_PIPELINE_CONFIG = {
     "use_advanced_loader": True,
     "medical_importance": True,
     "ordinal_penalty": True,
+    # Joint DME+DR selection policy for checkpoints and final stage ranking.
+    "joint_selection": {
+        "enabled": True,
+        "thresholds": [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]],
+        "fallback_step": 0.05,
+        "min_threshold": 0.0,
+    },
 }
 
 
@@ -271,7 +278,7 @@ def stage_training(
     Returns
     -------
     tuple
-        ``(model, history)``
+        ``(model, history, output_weights, selected_checkpoint_path)``
     """
     from train_enhanced import train_enhanced, DEFAULT_ENHANCED_CONFIG
 
@@ -284,6 +291,7 @@ def stage_training(
         **DEFAULT_ENHANCED_CONFIG,
         "input_shape": config["input_shape"],
         "num_dme_classes": config["num_dme_classes"],
+        "num_dr_classes": config.get("num_dr_classes", 5),
         "batch_size": config["batch_size"],
         "epochs": stage_cfg.get("epochs", 30),
         "learning_rate": stage_cfg.get("learning_rate", 1e-4),
@@ -302,6 +310,28 @@ def stage_training(
         "output_dir": config["output_dir"],
         "seed": config["seed"],
     }
+
+    joint_cfg = config.get("joint_selection", {}) if isinstance(config.get("joint_selection"), dict) else {}
+    train_config.update(
+        {
+            "joint_checkpoint_enabled": stage_cfg.get(
+                "joint_checkpoint_enabled",
+                joint_cfg.get("enabled", True),
+            ),
+            "joint_qwk_thresholds": stage_cfg.get(
+                "joint_qwk_thresholds",
+                joint_cfg.get("thresholds", [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]]),
+            ),
+            "joint_qwk_fallback_step": stage_cfg.get(
+                "joint_qwk_fallback_step",
+                joint_cfg.get("fallback_step", 0.05),
+            ),
+            "joint_qwk_min_threshold": stage_cfg.get(
+                "joint_qwk_min_threshold",
+                joint_cfg.get("min_threshold", 0.0),
+            ),
+        }
+    )
 
     if stage_name == "stage2":
         train_config.update(
@@ -336,23 +366,33 @@ def stage_training(
         output_weights=output_weights,
     )
 
-    # Always evaluate using the best-QWK checkpoint for this stage.
-    best_ckpt = os.path.join(checkpoint_dir, "best_qwk.weights.h5")
-    if os.path.exists(best_ckpt):
-        model.load_weights(best_ckpt)
+    # Evaluate using joint-best checkpoint when available, otherwise best DME-QWK.
+    best_qwk_ckpt = os.path.join(checkpoint_dir, "best_qwk.weights.h5")
+    best_joint_ckpt = os.path.join(checkpoint_dir, "best_joint.weights.h5")
+    selected_ckpt = None
+
+    if bool(train_config.get("joint_checkpoint_enabled", True)) and os.path.exists(best_joint_ckpt):
+        selected_ckpt = best_joint_ckpt
+    elif os.path.exists(best_qwk_ckpt):
+        selected_ckpt = best_qwk_ckpt
+
+    if selected_ckpt is not None:
+        model.load_weights(selected_ckpt)
         logger.info(
-            "✅ Evaluation: loaded best %s checkpoint from '%s'.",
+            "✅ Evaluation: loaded selected %s checkpoint from '%s'.",
             stage_name,
-            best_ckpt,
+            selected_ckpt,
         )
     else:
         logger.warning(
-            "Best checkpoint not found for %s at '%s'; evaluating final epoch weights.",
+            "No checkpoint found for %s at '%s' or '%s'; evaluating final epoch weights.",
             stage_name,
-            best_ckpt,
+            best_joint_ckpt,
+            best_qwk_ckpt,
         )
+        selected_ckpt = output_weights
 
-    return model, history, output_weights
+    return model, history, output_weights, selected_ckpt
 
 
 def stage_evaluation(
@@ -396,7 +436,96 @@ def stage_evaluation(
 # Results aggregation
 # ---------------------------------------------------------------------------
 
-def aggregate_results(all_stage_metrics: Dict, output_dir: str) -> Dict:
+def _build_joint_threshold_ladder(
+    thresholds,
+    fallback_step: float = 0.05,
+    min_threshold: float = 0.0,
+    max_extra_steps: int = 12,
+):
+    """Build strict-to-relaxed threshold ladder for joint DME/DR selection."""
+    ladder = []
+    for pair in thresholds or []:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        try:
+            ladder.append((float(pair[0]), float(pair[1])))
+        except (TypeError, ValueError):
+            continue
+
+    if not ladder:
+        ladder = [(0.75, 0.70), (0.75, 0.65), (0.70, 0.60)]
+
+    step = float(fallback_step)
+    if step > 0:
+        min_t = float(min_threshold)
+        last_dme, last_dr = ladder[-1]
+        for i in range(1, max_extra_steps + 1):
+            nd = max(min_t, last_dme - step * i)
+            nr = max(min_t, last_dr - step * i)
+            if (nd, nr) == ladder[-1]:
+                break
+            ladder.append((nd, nr))
+            if nd <= min_t and nr <= min_t:
+                break
+
+    return ladder
+
+
+def _extract_dr_qwk(metrics: Dict) -> float:
+    """Extract DR QWK regardless of nested or flat metric schema."""
+    if not isinstance(metrics, dict):
+        return float("nan")
+
+    if "dr_qwk" in metrics:
+        try:
+            return float(metrics["dr_qwk"])
+        except (TypeError, ValueError):
+            return float("nan")
+
+    dr_block = metrics.get("dr", {})
+    if isinstance(dr_block, dict):
+        try:
+            return float(dr_block.get("dr_qwk", float("nan")))
+        except (TypeError, ValueError):
+            return float("nan")
+    return float("nan")
+
+
+def _joint_candidate(stage: str, dme_qwk: float, dr_qwk: float, ladder):
+    tier_index = len(ladder)
+    for idx, (dme_t, dr_t) in enumerate(ladder):
+        if dme_qwk >= dme_t and dr_qwk >= dr_t:
+            tier_index = idx
+            break
+
+    harmonic = 0.0
+    if dme_qwk + dr_qwk > 0:
+        harmonic = 2.0 * dme_qwk * dr_qwk / (dme_qwk + dr_qwk)
+
+    return {
+        "stage": stage,
+        "tier_index": tier_index,
+        "harmonic": harmonic,
+        "dme_qwk": dme_qwk,
+        "dr_qwk": dr_qwk,
+    }
+
+
+def _is_better_joint_candidate(candidate: Dict, best: Dict) -> bool:
+    if candidate["tier_index"] != best["tier_index"]:
+        return candidate["tier_index"] < best["tier_index"]
+    if candidate["harmonic"] != best["harmonic"]:
+        return candidate["harmonic"] > best["harmonic"]
+    if candidate["dme_qwk"] != best["dme_qwk"]:
+        return candidate["dme_qwk"] > best["dme_qwk"]
+    return candidate["dr_qwk"] > best["dr_qwk"]
+
+
+def aggregate_results(
+    all_stage_metrics: Dict,
+    output_dir: str,
+    joint_selection_cfg: Optional[Dict] = None,
+) -> Dict:
     """Aggregate results from all pipeline stages.
 
     Parameters
@@ -418,10 +547,20 @@ def aggregate_results(all_stage_metrics: Dict, output_dir: str) -> Dict:
         "target_met": False,
     }
 
+    joint_cfg = joint_selection_cfg or {}
+    ladder = _build_joint_threshold_ladder(
+        joint_cfg.get("thresholds", [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]]),
+        fallback_step=float(joint_cfg.get("fallback_step", 0.05)),
+        min_threshold=float(joint_cfg.get("min_threshold", 0.0)),
+    )
+    best_joint = None
+
     for stage, metrics in all_stage_metrics.items():
-        qwk = metrics.get("qwk", 0.0)
+        qwk = float(metrics.get("qwk", 0.0))
+        dr_qwk = _extract_dr_qwk(metrics)
         report["stages"][stage] = {
             "qwk": qwk,
+            "dr_qwk": dr_qwk,
             "mae": metrics.get("mae", float("nan")),
             "accuracy": metrics.get("accuracy", 0.0),
             "f1_macro": metrics.get("f1_macro", 0.0),
@@ -432,17 +571,45 @@ def aggregate_results(all_stage_metrics: Dict, output_dir: str) -> Dict:
             report["best_stage"] = stage
             report["target_met"] = qwk >= 0.80
 
+        if np.isfinite(dr_qwk):
+            candidate = _joint_candidate(stage, qwk, dr_qwk, ladder)
+            if best_joint is None or _is_better_joint_candidate(candidate, best_joint):
+                best_joint = candidate
+
+    if best_joint is not None:
+        report["best_joint_stage"] = best_joint["stage"]
+        report["best_joint_dme_qwk"] = best_joint["dme_qwk"]
+        report["best_joint_dr_qwk"] = best_joint["dr_qwk"]
+        report["best_joint_tier_index"] = int(best_joint["tier_index"])
+        if best_joint["tier_index"] < len(ladder):
+            dme_t, dr_t = ladder[best_joint["tier_index"]]
+            report["best_joint_threshold"] = {
+                "dme_qwk_min": dme_t,
+                "dr_qwk_min": dr_t,
+            }
+        report["joint_threshold_ladder"] = [
+            {"dme_qwk_min": float(d), "dr_qwk_min": float(r)} for d, r in ladder
+        ]
+
     report_path = os.path.join(output_dir, "pipeline_report.json")
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
     logger.info("Pipeline report saved to '%s'.", report_path)
 
     logger.info(
-        "\nPipeline Summary:\n  Best QWK: %.4f (%s)\n  Target ≥0.80 met: %s",
+        "\nPipeline Summary:\n  Best DME QWK: %.4f (%s)\n  Target ≥0.80 met: %s",
         report["best_qwk"],
         report["best_stage"],
         "✅ YES" if report["target_met"] else "❌ NO",
     )
+    if best_joint is not None:
+        logger.info(
+            "  Best joint stage: %s (DME QWK=%.4f, DR QWK=%.4f, tier=%d)",
+            report["best_joint_stage"],
+            report["best_joint_dme_qwk"],
+            report["best_joint_dr_qwk"],
+            report["best_joint_tier_index"] + 1,
+        )
     return report
 
 
@@ -513,7 +680,7 @@ def run_pipeline(
         logger.info("Using EyePACS backbone weights: '%s'", eyepacs_backbone)
     elif backbone_weights_path is not None:
         logger.info("Using custom backbone weights: '%s'", backbone_weights_path)
-    model, history1, weights1 = stage_training(
+    model, history1, weights1, selected_stage1_ckpt = stage_training(
         train_ds, val_ds, class_weights, cfg, stage_name="stage1",
         eyepacs_backbone=eyepacs_backbone,
         backbone_weights_path=backbone_weights_path,
@@ -522,21 +689,22 @@ def run_pipeline(
     all_metrics["stage1"] = metrics1
     logger.info("Stage 1 QWK: %.4f", metrics1["qwk"])
 
+    stage1_selected_path = selected_stage1_ckpt
     best_stage1_weights = os.path.join(cfg["checkpoint_dir"], "stage1", "best_qwk.weights.h5")
-    if os.path.exists(best_stage1_weights):
+    if os.path.exists(stage1_selected_path):
         stage1_qwk = float(metrics1.get("qwk", float("nan")))
         if np.isfinite(stage1_qwk):
             stage1_snapshot_name = f"stage1_best_{stage1_qwk:.4f}.weights.h5"
             stage1_snapshot_path = os.path.join(cfg["checkpoint_dir"], "stage1", stage1_snapshot_name)
-            if os.path.abspath(stage1_snapshot_path) != os.path.abspath(best_stage1_weights):
-                shutil.copy2(best_stage1_weights, stage1_snapshot_path)
+            if os.path.abspath(stage1_snapshot_path) != os.path.abspath(stage1_selected_path):
+                shutil.copy2(stage1_selected_path, stage1_snapshot_path)
                 logger.info(
                     "Archived Stage 1 best checkpoint as '%s'.",
                     stage1_snapshot_path,
                 )
             stage2_init_weights = stage1_snapshot_path
         else:
-            stage2_init_weights = best_stage1_weights
+            stage2_init_weights = stage1_selected_path
         logger.info(
             "Stage 2 will start from Stage 1 best full-model checkpoint: '%s'",
             stage2_init_weights,
@@ -544,8 +712,8 @@ def run_pipeline(
     else:
         stage2_init_weights = weights1
         logger.warning(
-            "Stage 1 best checkpoint not found at '%s'. Falling back to final Stage 1 weights '%s'.",
-            best_stage1_weights,
+            "Stage 1 selected checkpoint not found at '%s'. Falling back to final Stage 1 weights '%s'.",
+            stage1_selected_path,
             stage2_init_weights,
         )
 
@@ -553,7 +721,7 @@ def run_pipeline(
     if two_stage:
         logger.info("\n" + "=" * 60 + "\nSTAGE 2: Fine-Tuning\n" + "=" * 60)
         logger.info("Stage 2 starting from: %s", stage2_init_weights)
-        model, history2, weights2 = stage_training(
+        model, history2, weights2, selected_stage2_ckpt = stage_training(
             train_ds, val_ds, class_weights, cfg,
             stage_name="stage2",
             pretrained_weights=stage2_init_weights,
@@ -563,7 +731,11 @@ def run_pipeline(
         all_metrics["stage2"] = metrics2
         logger.info("Stage 2 QWK: %.4f", metrics2["qwk"])
 
-    report = aggregate_results(all_metrics, cfg["output_dir"])
+    report = aggregate_results(
+        all_metrics,
+        cfg["output_dir"],
+        joint_selection_cfg=cfg.get("joint_selection", {}),
+    )
     elapsed = time.time() - t_total
     logger.info("Total pipeline time: %.1f seconds.", elapsed)
     report["elapsed_seconds"] = round(elapsed, 1)
@@ -630,7 +802,7 @@ def run_stage2_only(
 
     logger.info("\n" + "=" * 60 + "\nSTAGE 2: Fine-Tuning\n" + "=" * 60)
     logger.info("Stage 2 starting from: %s", stage2_init_weights)
-    model, history2, weights2 = stage_training(
+    model, history2, weights2, selected_stage2_ckpt = stage_training(
         train_ds,
         val_ds,
         class_weights,
@@ -642,7 +814,11 @@ def run_stage2_only(
     metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
     logger.info("Stage 2 QWK: %.4f", metrics2.get("qwk", float("nan")))
 
-    report = aggregate_results({"stage2": metrics2}, cfg["output_dir"])
+    report = aggregate_results(
+        {"stage2": metrics2},
+        cfg["output_dir"],
+        joint_selection_cfg=cfg.get("joint_selection", {}),
+    )
     elapsed = time.time() - t_total
     logger.info("Total stage2-only time: %.1f seconds.", elapsed)
     report["elapsed_seconds"] = round(elapsed, 1)

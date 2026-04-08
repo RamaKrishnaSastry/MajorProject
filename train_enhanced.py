@@ -72,6 +72,11 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "stage2_min_improvement": 0.0,
     # Stage2 BN control: freeze ASPP BN with backbone BN to reduce adaptation cost.
     "stage2_freeze_aspp_bn": True,
+    # Joint DME+DR checkpoint policy.
+    "joint_checkpoint_enabled": True,
+    "joint_qwk_thresholds": [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]],
+    "joint_qwk_fallback_step": 0.05,
+    "joint_qwk_min_threshold": 0.0,
 }
 
 
@@ -446,6 +451,128 @@ class QWKModelCheckpoint(keras.callbacks.Callback):
                 )
             self.best_qwk = current_qwk
             self.model.save_weights(self.filepath)
+
+
+def _build_joint_qwk_threshold_ladder(
+    base_thresholds,
+    fallback_step: float = 0.05,
+    min_threshold: float = 0.0,
+    max_extra_steps: int = 12,
+) -> List[Tuple[float, float]]:
+    """Build threshold ladder from strict pairs with configurable fallback."""
+    ladder: List[Tuple[float, float]] = []
+    for pair in base_thresholds or []:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        try:
+            dme_t = float(pair[0])
+            dr_t = float(pair[1])
+            ladder.append((dme_t, dr_t))
+        except (TypeError, ValueError):
+            continue
+
+    if not ladder:
+        ladder = [(0.75, 0.70), (0.75, 0.65), (0.70, 0.60)]
+
+    step = float(fallback_step)
+    if step <= 0:
+        return ladder
+
+    min_t = float(min_threshold)
+    last_dme, last_dr = ladder[-1]
+    for i in range(1, max_extra_steps + 1):
+        next_dme = max(min_t, last_dme - step * i)
+        next_dr = max(min_t, last_dr - step * i)
+        if (next_dme, next_dr) == ladder[-1]:
+            break
+        ladder.append((next_dme, next_dr))
+        if next_dme <= min_t and next_dr <= min_t:
+            break
+
+    return ladder
+
+
+class JointQWKModelCheckpoint(keras.callbacks.Callback):
+    """Save model when joint DME+DR rank improves based on threshold ladder."""
+
+    def __init__(
+        self,
+        filepath: str,
+        thresholds: List[Tuple[float, float]],
+        verbose: int = 1,
+    ):
+        super().__init__()
+        self.filepath = filepath
+        self.thresholds = thresholds
+        self.verbose = verbose
+        self.best = None
+
+    def _make_candidate(self, dme_qwk: float, dr_qwk: float) -> Dict[str, float]:
+        tier_index = len(self.thresholds)
+        for idx, (dme_t, dr_t) in enumerate(self.thresholds):
+            if dme_qwk >= dme_t and dr_qwk >= dr_t:
+                tier_index = idx
+                break
+
+        harmonic = 0.0
+        if dme_qwk + dr_qwk > 0:
+            harmonic = 2.0 * dme_qwk * dr_qwk / (dme_qwk + dr_qwk)
+
+        return {
+            "tier_index": float(tier_index),
+            "harmonic": float(harmonic),
+            "dme_qwk": float(dme_qwk),
+            "dr_qwk": float(dr_qwk),
+        }
+
+    @staticmethod
+    def _is_better(candidate: Dict[str, float], best: Dict[str, float]) -> bool:
+        if int(candidate["tier_index"]) != int(best["tier_index"]):
+            return candidate["tier_index"] < best["tier_index"]
+        if candidate["harmonic"] != best["harmonic"]:
+            return candidate["harmonic"] > best["harmonic"]
+        if candidate["dme_qwk"] != best["dme_qwk"]:
+            return candidate["dme_qwk"] > best["dme_qwk"]
+        return candidate["dr_qwk"] > best["dr_qwk"]
+
+    def on_epoch_end(self, epoch: int, logs=None):
+        logs = logs or {}
+        dme_qwk = logs.get("val_qwk", None)
+        dr_qwk = logs.get("val_dr_qwk", None)
+        if dme_qwk is None or dr_qwk is None:
+            return
+
+        candidate = self._make_candidate(float(dme_qwk), float(dr_qwk))
+        if self.best is None or self._is_better(candidate, self.best):
+            previous = self.best
+            self.best = candidate
+            self.model.save_weights(self.filepath)
+
+            if self.verbose:
+                tier_idx = int(candidate["tier_index"])
+                if tier_idx < len(self.thresholds):
+                    dme_t, dr_t = self.thresholds[tier_idx]
+                    tier_label = f"tier={tier_idx+1} (dme>={dme_t:.2f}, dr>={dr_t:.2f})"
+                else:
+                    tier_label = "tier=unmatched"
+
+                if previous is None:
+                    logger.info(
+                        "JointQWKCheckpoint: saved initial best (%s, dme=%.4f, dr=%.4f) to '%s'.",
+                        tier_label,
+                        candidate["dme_qwk"],
+                        candidate["dr_qwk"],
+                        self.filepath,
+                    )
+                else:
+                    logger.info(
+                        "JointQWKCheckpoint: improved (%s, dme=%.4f, dr=%.4f, h=%.4f) -> saved to '%s'.",
+                        tier_label,
+                        candidate["dme_qwk"],
+                        candidate["dr_qwk"],
+                        candidate["harmonic"],
+                        self.filepath,
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -870,6 +997,7 @@ def build_enhanced_callbacks(
     """
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
     best_qwk_path = os.path.join(config["checkpoint_dir"], "best_qwk.weights.h5")
+    best_joint_path = os.path.join(config["checkpoint_dir"], "best_joint.weights.h5")
 
     checkpoint_initial_best_qwk = -np.inf
     use_stage1_baseline_for_checkpoint = bool(
@@ -907,6 +1035,24 @@ def build_enhanced_callbacks(
             max_batches=config.get("max_batches", None),
         ),
     ]
+
+    if bool(config.get("joint_checkpoint_enabled", True)):
+        joint_thresholds = _build_joint_qwk_threshold_ladder(
+            config.get("joint_qwk_thresholds", [[0.75, 0.70], [0.75, 0.65], [0.70, 0.60]]),
+            fallback_step=float(config.get("joint_qwk_fallback_step", 0.05)),
+            min_threshold=float(config.get("joint_qwk_min_threshold", 0.0)),
+        )
+        callbacks.append(
+            JointQWKModelCheckpoint(
+                filepath=best_joint_path,
+                thresholds=joint_thresholds,
+                verbose=1,
+            )
+        )
+        logger.info(
+            "JointQWKCheckpoint enabled with threshold ladder: %s",
+            [tuple(np.round(t, 3)) for t in joint_thresholds],
+        )
 
     # Stage 2 safety guard: abort if QWK collapses far below stage1 baseline.
     if (

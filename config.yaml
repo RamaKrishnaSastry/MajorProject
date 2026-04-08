@@ -82,6 +82,24 @@ model:
   dropout_rate: 0.4
 
 # ============================================================
+# JOINT DME+DR CHECKPOINT SELECTION
+# ============================================================
+# Best weights are chosen by a strict-to-relaxed DME/DR QWK ladder.
+# Default tiers (highest priority first):
+#   1) DME>=0.75 and DR>=0.70
+#   2) DME>=0.75 and DR>=0.65
+#   3) DME>=0.70 and DR>=0.60
+# If none are met, thresholds are relaxed by fallback_step each tier.
+joint_selection:
+  enabled: true
+  thresholds:
+    - [0.75, 0.70]
+    - [0.75, 0.65]
+    - [0.70, 0.60]
+  fallback_step: 0.05
+  min_threshold: 0.0
+
+# ============================================================
 # EVALUATION
 # ============================================================
 evaluation:
