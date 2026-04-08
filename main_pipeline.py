@@ -334,6 +334,23 @@ def stage_training(
         config=train_config,
         output_weights=output_weights,
     )
+
+    # Always evaluate using the best-QWK checkpoint for this stage.
+    best_ckpt = os.path.join(checkpoint_dir, "best_qwk.weights.h5")
+    if os.path.exists(best_ckpt):
+        model.load_weights(best_ckpt)
+        logger.info(
+            "✅ Evaluation: loaded best %s checkpoint from '%s'.",
+            stage_name,
+            best_ckpt,
+        )
+    else:
+        logger.warning(
+            "Best checkpoint not found for %s at '%s'; evaluating final epoch weights.",
+            stage_name,
+            best_ckpt,
+        )
+
     return model, history, output_weights
 
 
