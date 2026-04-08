@@ -242,6 +242,15 @@ def _extract_dme_labels(batch_labels):
     return batch_labels
 
 
+def _extract_dr_labels(batch_labels):
+    """Extract DR labels from dataset batch labels (dict/tuple/tensor)."""
+    if isinstance(batch_labels, dict):
+        return batch_labels.get("dr_output", batch_labels.get("dr"))
+    if isinstance(batch_labels, (tuple, list)):
+        return batch_labels[0]
+    return batch_labels
+
+
 def log_dataset_class_distribution(
     dataset: tf.data.Dataset,
     name: str,
@@ -344,6 +353,58 @@ def compute_dataset_class_counts(
 
     logger.info(
         "Computed exact train DME class counts from dataset: %s (samples=%d, batches=%s)",
+        counts.tolist(),
+        total,
+        "unknown" if cardinality in (None, tf.data.experimental.UNKNOWN_CARDINALITY) else cardinality,
+    )
+    return counts
+
+
+def compute_dataset_dr_class_counts(
+    dataset: tf.data.Dataset,
+    num_classes: int = 5,
+) -> Optional[np.ndarray]:
+    """Compute exact DR class counts by iterating the full dataset once."""
+    if num_classes <= 0:
+        return None
+
+    try:
+        cardinality = int(tf.data.experimental.cardinality(dataset).numpy())
+        if cardinality == tf.data.experimental.INFINITE_CARDINALITY:
+            logger.warning("Dataset has infinite cardinality; cannot compute exact DR class counts.")
+            return None
+    except Exception:
+        cardinality = None
+
+    counts = np.zeros(num_classes, dtype=np.int64)
+
+    for batch_data in dataset:
+        if not isinstance(batch_data, (tuple, list)) or len(batch_data) < 2:
+            continue
+
+        _, batch_labels = batch_data
+        dr_labels = _extract_dr_labels(batch_labels)
+
+        try:
+            arr = dr_labels.numpy()
+        except (AttributeError, TypeError):
+            arr = np.asarray(dr_labels)
+
+        if arr.ndim > 1:
+            classes = np.argmax(arr, axis=-1)
+        else:
+            classes = arr.astype(int).reshape(-1)
+
+        classes = np.clip(classes, 0, num_classes - 1)
+        counts += np.bincount(classes, minlength=num_classes)
+
+    total = int(np.sum(counts))
+    if total == 0:
+        logger.warning("Could not compute DR class counts from training dataset (zero samples read).")
+        return None
+
+    logger.info(
+        "Computed exact train DR class counts from dataset: %s (samples=%d, batches=%s)",
         counts.tolist(),
         total,
         "unknown" if cardinality in (None, tf.data.experimental.UNKNOWN_CARDINALITY) else cardinality,
@@ -647,7 +708,7 @@ def compile_model_enhanced(
             "dme_risk": dme_loss,
         },
         loss_weights={
-            "dr_output": 0.05,
+            "dr_output": 0.2,
             "dme_risk": 1.0,
         },
         metrics={
@@ -1038,6 +1099,29 @@ def train_enhanced(
                     )
             except Exception as e:
                 logger.warning("Could not initialize DME bias: %s", e)
+
+            try:
+                dr_head = model.get_layer("dr_output")
+                dr_class_counts = compute_dataset_dr_class_counts(
+                    train_ds,
+                    num_classes=int(cfg.get("num_dr_classes", 5)),
+                )
+                if dr_class_counts is None:
+                    raise ValueError("Training class counts unavailable for DR bias initialization.")
+                dr_class_counts = dr_class_counts.astype(np.float32)
+                dr_class_probs = dr_class_counts / dr_class_counts.sum()
+                dr_log_probs = np.log(dr_class_probs + 1e-7)
+                dr_weights = dr_head.get_weights()
+                if len(dr_weights) >= 2:
+                    dr_weights[1] = dr_log_probs
+                    dr_head.set_weights(dr_weights)
+                    logger.info(
+                        "✅ DR head bias initialized from train split counts=%s -> log_probs=%s",
+                        dr_class_counts.astype(int).tolist(),
+                        np.round(dr_log_probs, 3),
+                    )
+            except Exception as e:
+                logger.warning("Could not initialize DR bias: %s", e)
 
         else:
             # Stage 2: strictly restore full Stage 1 checkpoint (backbone + heads)
