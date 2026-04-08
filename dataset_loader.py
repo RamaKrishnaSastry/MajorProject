@@ -284,19 +284,18 @@ def _build_tf_dataset(
     Returns targets as dict {'dr_output': ..., 'dme_risk': ...} to match the
     multi-output model structure.
 
-    DR head  : regression (MSE).  Target = dr_label ∈ [0, 4], shape (1,).
-               Compatible with EyePACS-pretrained ``Dense(1, relu)`` head.
+    DR head  : 5-class softmax classification. Target = one-hot, shape (5,).
     DME head : 3-class softmax (categorical crossentropy).
                Target = one-hot, shape (3,).
     """
     # Convert DME labels to one-hot for 3-class classification
     labels_dme_oh = tf.keras.utils.to_categorical(dme_labels, num_classes=NUM_DME_CLASSES)
 
-    # DR labels: keep native DR grades in [0, 4] (5 integer classes) for ReLU regression head
-    labels_dr = dr_labels.astype(np.float32).reshape(-1, 1)
+    # DR labels: one-hot for 5-class softmax classification.
+    labels_dr_oh = tf.keras.utils.to_categorical(dr_labels, num_classes=NUM_DR_CLASSES)
 
     # Dataset with both DR and DME labels
-    ds = tf.data.Dataset.from_tensor_slices((image_paths, labels_dr, labels_dme_oh))
+    ds = tf.data.Dataset.from_tensor_slices((image_paths, labels_dr_oh, labels_dme_oh))
     
     if shuffle:
         ds = ds.shuffle(buffer_size=len(image_paths), seed=seed, reshuffle_each_iteration=True)
@@ -305,7 +304,7 @@ def _build_tf_dataset(
     def load_and_format(path, dr_label, dme_label):
         image = preprocess_fn(path)
         targets = {
-            'dr_output': dr_label,      # Shape: (1,) normalized float
+            'dr_output': dr_label,      # Shape: (5,) one-hot
             'dme_risk': dme_label,      # Shape: (3,) one-hot
         }
         return image, targets

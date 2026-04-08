@@ -616,6 +616,7 @@ def compile_model_enhanced(
     model: keras.Model,
     learning_rate: float = 1e-4,
     num_dme_classes: int = 3,
+    num_dr_classes: int = 5,
     class_weights: Optional[Dict[int, float]] = None,
     ordinal_loss_weighting: bool = True,
     focal_loss_gamma: float = 2.0,
@@ -642,14 +643,17 @@ def compile_model_enhanced(
     model.compile(
         optimizer=optimizer,
         loss={
-            "dr_output": "mse",
+            "dr_output": "categorical_crossentropy",
             "dme_risk": dme_loss,
         },
         loss_weights={
-            "dr_output": 0.05,   # DR regression contributes to joint training
+            "dr_output": 0.05,
             "dme_risk": 1.0,
         },
         metrics={
+            "dr_output": [
+                keras.metrics.CategoricalAccuracy(name="dr_accuracy"),
+            ],
             "dme_risk": [
                 keras.metrics.CategoricalAccuracy(name="accuracy"),
             ],
@@ -961,6 +965,7 @@ def train_enhanced(
             input_shape=tuple(cfg["input_shape"]),
             pretrained_weights=pretrained_weights,
             num_dme_classes=cfg["num_dme_classes"],
+            num_dr_classes=cfg.get("num_dr_classes", 5),
             dropout_rate=float(cfg.get("dropout_rate", 0.5)),
             backbone_weights_path=backbone_weights_path,
         )
@@ -986,6 +991,7 @@ def train_enhanced(
             input_shape=tuple(cfg["input_shape"]),
             backbone_weights=backbone_weights,
             num_dme_classes=cfg["num_dme_classes"],
+            num_dr_classes=cfg.get("num_dr_classes", 5),
             dropout_rate=float(cfg.get("dropout_rate", 0.5)),
             trainable=True,
             backbone_weights_path=model_backbone_weights_path,
@@ -1049,8 +1055,9 @@ def train_enhanced(
             dme_head = model.get_layer("dme_risk")
             dme_head_before = [np.copy(w) for w in dme_head.get_weights()]
 
-            # Strict load: do not allow silent partial restores.
-            model.load_weights(pretrained_weights)
+            # Backward-compatible load: DR head shape changed (regression -> softmax).
+            # Keep backbone/ASPP/DME weights from checkpoint and re-init mismatched layers.
+            model.load_weights(pretrained_weights, skip_mismatch=True)
 
             dme_head_after = dme_head.get_weights()
             if dme_head_before and dme_head_after and len(dme_head_before) == len(dme_head_after):
@@ -1094,6 +1101,7 @@ def train_enhanced(
         model,
         learning_rate=cfg["learning_rate"],
         num_dme_classes=cfg["num_dme_classes"],
+        num_dr_classes=cfg.get("num_dr_classes", 5),
         class_weights=class_weights,
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
         focal_loss_gamma=cfg.get("focal_loss_gamma", 2.0),
