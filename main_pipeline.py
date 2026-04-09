@@ -561,6 +561,26 @@ def _extract_dr_qwk(metrics: Dict) -> float:
     return float("nan")
 
 
+def _extract_raw_dme_qwk(metrics: Dict) -> float:
+    """Extract raw (pre-calibration) DME QWK from comprehensive metrics."""
+    if not isinstance(metrics, dict):
+        return float("nan")
+
+    calibration = metrics.get("calibration", {})
+    if isinstance(calibration, dict):
+        dme_cal = calibration.get("dme", {})
+        if isinstance(dme_cal, dict) and "baseline_qwk" in dme_cal:
+            try:
+                return float(dme_cal["baseline_qwk"])
+            except (TypeError, ValueError):
+                pass
+
+    try:
+        return float(metrics.get("qwk", float("nan")))
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def _joint_candidate(stage: str, dme_qwk: float, dr_qwk: float, ladder):
     tier_index = len(ladder)
     for idx, (dme_t, dr_t) in enumerate(ladder):
@@ -814,11 +834,18 @@ def run_pipeline(
     if two_stage:
         logger.info("\n" + "=" * 60 + "\nSTAGE 2: Fine-Tuning\n" + "=" * 60)
         logger.info("Stage 2 starting from: %s", stage2_init_weights)
+        stage1_baseline_qwk = _extract_raw_dme_qwk(metrics1)
+        if np.isfinite(stage1_baseline_qwk):
+            logger.info(
+                "Stage 2 baseline uses raw Stage 1 DME QWK=%.4f (reported Stage 1 QWK=%.4f).",
+                stage1_baseline_qwk,
+                float(metrics1.get("qwk", float("nan"))),
+            )
         model, history2, weights2, selected_stage2_ckpt = stage_training(
             train_ds, val_ds, class_weights, cfg,
             stage_name="stage2",
             pretrained_weights=stage2_init_weights,
-            stage1_baseline_qwk=metrics1.get("qwk"),
+            stage1_baseline_qwk=stage1_baseline_qwk,
         )
         metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
         all_metrics["stage2"] = metrics2
@@ -895,7 +922,7 @@ def run_stage2_only(
 
     with open(stage1_metrics_path, "r") as f:
         stage1_metrics = json.load(f)
-    stage1_baseline_qwk = float(stage1_metrics.get("qwk", float("nan")))
+    stage1_baseline_qwk = _extract_raw_dme_qwk(stage1_metrics)
     if not np.isfinite(stage1_baseline_qwk):
         raise ValueError(
             "Could not read finite Stage 1 QWK baseline from "
