@@ -64,6 +64,8 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     # Focal loss gamma: 0 = standard CE, 2.0 = standard focal loss.
     # Higher gamma reduces gradient for easy majority-class samples.
     "focal_loss_gamma": 2.0,
+    "dme_label_smoothing": 0.05,
+    "dme_soft_ordinal_weights": True,
     "dr_loss_weight": 0.2,
     "dr_class_weighting": True,
     "dr_class_weight_clip_ratio": 6.0,
@@ -157,10 +159,20 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
        to minority classes.
     """
 
-    def __init__(self, num_classes=3, class_weights=None, focal_loss_gamma=2.0, **kwargs):
+    def __init__(
+        self,
+        num_classes=3,
+        class_weights=None,
+        focal_loss_gamma=2.0,
+        label_smoothing=0.05,
+        use_soft_ordinal_weights=True,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.num_classes = num_classes
         self.focal_loss_gamma = focal_loss_gamma
+        self.label_smoothing = float(label_smoothing)
+        self.use_soft_ordinal_weights = bool(use_soft_ordinal_weights)
 
         # Create ordinal weight matrix
         self.ordinal_matrix = self._build_ordinal_matrix(num_classes)
@@ -202,10 +214,12 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
     def call(self, y_true, y_pred):
         y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
 
-        # Label smoothing: prevents the model from being overconfident on one class
-        smoothing = 0.1
-        num_cls = tf.cast(tf.shape(y_true)[-1], tf.float32)
-        y_true_smooth = y_true * (1.0 - smoothing) + (smoothing / num_cls)
+        # Label smoothing prevents overconfident updates on noisy/boundary samples.
+        if self.label_smoothing > 0.0:
+            num_cls = tf.cast(tf.shape(y_true)[-1], tf.float32)
+            y_true_smooth = y_true * (1.0 - self.label_smoothing) + (self.label_smoothing / num_cls)
+        else:
+            y_true_smooth = y_true
 
         # Cross-entropy on smoothed labels
         ce_loss = -tf.reduce_sum(y_true_smooth * tf.math.log(y_pred), axis=-1)
@@ -218,11 +232,16 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
 
         # Ordinal + class weights
         y_true_class = tf.argmax(y_true, axis=1)
-        y_pred_class = tf.argmax(y_pred, axis=1)
-        ordinal_weights = tf.gather_nd(
-            self.ordinal_matrix,
-            tf.stack([y_true_class, y_pred_class], axis=1)
-        )
+        if self.use_soft_ordinal_weights:
+            # Differentiable expected ordinal cost under predicted distribution.
+            true_class_rows = tf.gather(self.ordinal_matrix, y_true_class)
+            ordinal_weights = tf.reduce_sum(true_class_rows * y_pred, axis=-1)
+        else:
+            y_pred_class = tf.argmax(y_pred, axis=1)
+            ordinal_weights = tf.gather_nd(
+                self.ordinal_matrix,
+                tf.stack([y_true_class, y_pred_class], axis=1),
+            )
         class_weights_per_sample = tf.gather(self.class_weights, y_true_class)
 
         # NO entropy term — it was causing soft single-class collapse
@@ -241,6 +260,8 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         config.update({
             "num_classes": self.num_classes,
             "focal_loss_gamma": float(getattr(self, "focal_loss_gamma", 0.0)),
+            "label_smoothing": float(getattr(self, "label_smoothing", 0.0)),
+            "use_soft_ordinal_weights": bool(getattr(self, "use_soft_ordinal_weights", True)),
             "class_weights": class_weights_list,
         })
         return config
@@ -946,6 +967,8 @@ def compile_model_enhanced(
     dr_class_weights: Optional[Dict[int, float]] = None,
     ordinal_loss_weighting: bool = True,
     focal_loss_gamma: float = 2.0,
+    dme_label_smoothing: float = 0.05,
+    dme_soft_ordinal_weights: bool = True,
     dr_loss_weight: float = 0.2,
     dr_class_weighting: bool = True,
 ) -> keras.Model:
@@ -960,9 +983,16 @@ def compile_model_enhanced(
             num_classes=num_dme_classes,
             class_weights=class_weights,
             focal_loss_gamma=focal_loss_gamma,
+            label_smoothing=dme_label_smoothing,
+            use_soft_ordinal_weights=dme_soft_ordinal_weights,
         )
         logger.info("Using ordinal-weighted cross-entropy loss with class balancing.")
         logger.info("Focal loss gamma=%.1f (0=disabled).", focal_loss_gamma)
+        logger.info(
+            "DME loss settings: label_smoothing=%.3f, soft_ordinal_weights=%s",
+            dme_label_smoothing,
+            dme_soft_ordinal_weights,
+        )
         if class_weights:
             logger.info("DME class weights applied in loss: %s", class_weights)
     else:
@@ -1549,6 +1579,8 @@ def train_enhanced(
         dr_class_weights=dr_class_weights_for_loss,
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
         focal_loss_gamma=cfg.get("focal_loss_gamma", 2.0),
+        dme_label_smoothing=float(cfg.get("dme_label_smoothing", 0.05)),
+        dme_soft_ordinal_weights=bool(cfg.get("dme_soft_ordinal_weights", True)),
         dr_loss_weight=float(cfg.get("dr_loss_weight", 0.2)),
         dr_class_weighting=bool(cfg.get("dr_class_weighting", True)),
     )

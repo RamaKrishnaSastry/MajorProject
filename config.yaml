@@ -25,6 +25,7 @@ batch_size: 8
 val_split: 0.20
 augment_train: true
 use_advanced_loader: true # Use QWK-aware stratified loader
+dme_class_weight_clip_ratio: 9.5 # prevents over-clipping mild-class weight on imbalanced splits
 max_batches:
   null # null = process entire validation set for accurate QWK
   # Set to a positive integer to limit batches (useful to
@@ -53,6 +54,8 @@ stage1:
   min_lr: 1.0e-7
   ordinal_loss_weighting: true
   focal_loss_gamma: 1.5
+  dme_label_smoothing: 0.04
+  dme_soft_ordinal_weights: true
   dr_loss_weight: 0.32
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.5
@@ -69,6 +72,8 @@ stage2:
   min_lr: 1.0e-9
   ordinal_loss_weighting: true
   focal_loss_gamma: 1.5
+  dme_label_smoothing: 0.02
+  dme_soft_ordinal_weights: true
   dr_loss_weight: 0.12
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 6.0

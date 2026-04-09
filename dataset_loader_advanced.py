@@ -62,6 +62,7 @@ def compute_ordinal_class_weights(
     num_classes: int = NUM_DME_CLASSES,
     medical_importance: bool = True,
     ordinal_penalty: bool = True,
+    clip_ratio: Optional[float] = 7.0,
 ) -> Dict[int, float]:
     """Compute balanced class weights with gentle medical importance scaling.
     
@@ -80,8 +81,9 @@ def compute_ordinal_class_weights(
 
      3. **Post-normalization clipping**: After medical importance scaling, weights are
          re-normalized so the mean is 1.0 (keeping the loss scale interpretable). A safety check
-         ensures the ratio of max to min weight does not exceed 7x. If it does (e.g., due to
-         extreme class imbalance), weights are clipped and re-normalized to maintain stability.
+         ensures the ratio of max to min weight does not exceed clip_ratio (default 7x). If it
+         does (e.g., due to extreme class imbalance), weights are clipped and re-normalized to
+         maintain stability.
 
     Parameters
     ----------
@@ -154,15 +156,15 @@ def compute_ordinal_class_weights(
     mean_w = np.mean(list(class_weights.values()))
     class_weights = {k: round(v / mean_w, 4) for k, v in class_weights.items()}
 
-    # Step 4: sanity check — no weight should be > 7x any other weight
+    # Step 4: sanity check — no weight should be > clip_ratio any other weight
     vals = list(class_weights.values())
     ratio = max(vals) / min(vals)
-    if ratio > 7.0:
+    if clip_ratio is not None and clip_ratio > 1.0 and ratio > float(clip_ratio):
         logger.warning(
-            "Class weight ratio %.1fx, clipping to 7x.", ratio
+            "Class weight ratio %.1fx, clipping to %.1fx.", ratio, float(clip_ratio)
         )
         min_w = min(vals)
-        class_weights = {k: min(v, min_w * 7.0) for k, v in class_weights.items()}
+        class_weights = {k: min(v, min_w * float(clip_ratio)) for k, v in class_weights.items()}
         # re-normalize after clipping
         mean_w = np.mean(list(class_weights.values()))
         class_weights = {k: round(v / mean_w, 4) for k, v in class_weights.items()}
@@ -407,6 +409,7 @@ def build_datasets_advanced(
     grid_size: int = 8,
     medical_importance: bool = True,
     ordinal_penalty: bool = True,
+    dme_class_weight_clip_ratio: Optional[float] = 7.0,
     output_dir: str = ".",
     save_split_info: bool = True,
     save_balance_plot: bool = True,
@@ -490,6 +493,7 @@ def build_datasets_advanced(
         num_classes=NUM_DME_CLASSES,
         medical_importance=medical_importance,
         ordinal_penalty=ordinal_penalty,
+        clip_ratio=dme_class_weight_clip_ratio,
     )
 
     preprocess_fn = make_preprocess_fn(
