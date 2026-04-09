@@ -73,6 +73,14 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     # restore stage1-init weights before returning/saving.
     "stage2_revert_if_worse": True,
     "stage2_min_improvement": 0.0,
+    # Stage2 collapse guard defaults.
+    "collapse_guard_ratio": 0.95,
+    "collapse_guard_min_abs_qwk": 0.68,
+    "collapse_guard_patience": 3,
+    # Immediate abort when val_qwk < (stage1_baseline_qwk - hard_drop).
+    "collapse_guard_hard_drop": 0.20,
+    # 1-based epoch index when collapse guard starts.
+    "collapse_guard_start_epoch": 1,
     # Stage2 BN control: freeze ASPP BN with backbone BN to reduce adaptation cost.
     "stage2_freeze_aspp_bn": True,
     # Joint DME+DR checkpoint policy.
@@ -1061,6 +1069,7 @@ class Stage2QWKCollapseGuard(keras.callbacks.Callback):
         min_ratio: float = 0.70,
         min_abs_qwk: float = 0.20,
         patience: int = 2,
+        hard_drop: float = 0.20,
         start_epoch: int = 1,
         verbose: int = 1,
     ):
@@ -1070,9 +1079,26 @@ class Stage2QWKCollapseGuard(keras.callbacks.Callback):
         self.min_ratio = float(min_ratio)
         self.min_abs_qwk = float(min_abs_qwk)
         self.patience = int(patience)
+        self.hard_drop = float(hard_drop)
         self.start_epoch = int(start_epoch)
         self.verbose = verbose
         self.bad_epochs = 0
+
+    def _trigger_restore_stop(self, reason: str) -> None:
+        if self.init_weights_path and os.path.exists(self.init_weights_path):
+            self.model.load_weights(self.init_weights_path)
+            logger.warning(
+                "Stage2CollapseGuard triggered (%s): restored stage2 init weights from '%s'.",
+                reason,
+                self.init_weights_path,
+            )
+        else:
+            logger.warning(
+                "Stage2CollapseGuard triggered (%s) but init weights path is unavailable: '%s'.",
+                reason,
+                self.init_weights_path,
+            )
+        self.model.stop_training = True
 
     def _threshold(self) -> float:
         ratio_threshold = self.baseline_qwk * self.min_ratio
@@ -1091,14 +1117,30 @@ class Stage2QWKCollapseGuard(keras.callbacks.Callback):
         if epoch_num < self.start_epoch:
             return
 
+        current_qwk_value = float(current_qwk)
+
+        hard_threshold = self.baseline_qwk - self.hard_drop
+        if current_qwk_value < hard_threshold:
+            if self.verbose:
+                logger.warning(
+                    "Stage2CollapseGuard: val_qwk=%.4f below hard threshold=%.4f "
+                    "(baseline=%.4f, hard_drop=%.4f).",
+                    current_qwk_value,
+                    hard_threshold,
+                    self.baseline_qwk,
+                    self.hard_drop,
+                )
+            self._trigger_restore_stop(reason="hard_drop")
+            return
+
         threshold = self._threshold()
-        if float(current_qwk) < threshold:
+        if current_qwk_value < threshold:
             self.bad_epochs += 1
             if self.verbose:
                 logger.warning(
                     "Stage2CollapseGuard: val_qwk=%.4f below threshold=%.4f "
                     "(%d/%d bad epochs).",
-                    float(current_qwk),
+                    current_qwk_value,
                     threshold,
                     self.bad_epochs,
                     self.patience,
@@ -1107,18 +1149,7 @@ class Stage2QWKCollapseGuard(keras.callbacks.Callback):
             self.bad_epochs = 0
 
         if self.bad_epochs >= self.patience:
-            if self.init_weights_path and os.path.exists(self.init_weights_path):
-                self.model.load_weights(self.init_weights_path)
-                logger.warning(
-                    "Stage2CollapseGuard triggered: restored stage2 init weights from '%s'.",
-                    self.init_weights_path,
-                )
-            else:
-                logger.warning(
-                    "Stage2CollapseGuard triggered but init weights path is unavailable: '%s'.",
-                    self.init_weights_path,
-                )
-            self.model.stop_training = True
+            self._trigger_restore_stop(reason="patience")
 
 def build_enhanced_callbacks(
     val_dataset: tf.data.Dataset,
@@ -1226,7 +1257,8 @@ def build_enhanced_callbacks(
                 min_ratio=float(config.get("collapse_guard_ratio", 0.95)),
                 min_abs_qwk=float(config.get("collapse_guard_min_abs_qwk", 0.68)),
                 patience=int(config.get("collapse_guard_patience", 3)),
-                start_epoch=1,
+                hard_drop=float(config.get("collapse_guard_hard_drop", 0.20)),
+                start_epoch=int(config.get("collapse_guard_start_epoch", 1)),
                 verbose=1,
             )
         )

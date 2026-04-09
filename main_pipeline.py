@@ -63,6 +63,7 @@ def set_global_seed(seed: int = 42) -> None:
 
 DEFAULT_PIPELINE_CONFIG = {
     "seed": 42,
+    "long_stage2_mode": True,
     "input_shape": [512, 512, 3],
     "num_dme_classes": 3,
     "num_dr_classes": 5,
@@ -102,6 +103,8 @@ DEFAULT_PIPELINE_CONFIG = {
         "collapse_guard_ratio": 0.95,
         "collapse_guard_min_abs_qwk": 0.68,
         "collapse_guard_patience": 3,
+        "collapse_guard_hard_drop": 0.20,
+        "collapse_guard_start_epoch": 1,
         "stage2_revert_if_worse": True,
         "stage2_min_improvement": 0.003,
     },
@@ -299,9 +302,31 @@ def stage_training(
     from train_enhanced import train_enhanced, DEFAULT_ENHANCED_CONFIG
 
     stage_cfg = config.get(stage_name, {})
+    long_stage2_mode = bool(config.get("long_stage2_mode", True))
     model_cfg = config.get("model", {}) if isinstance(config.get("model"), dict) else {}
     checkpoint_dir = os.path.join(config.get("checkpoint_dir", "checkpoints"), stage_name)
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if stage_name == "stage2":
+        if long_stage2_mode:
+            stage_epochs = int(stage_cfg.get("epochs", 35))
+            collapse_guard_patience = int(stage_cfg.get("collapse_guard_patience", 3))
+            logger.info(
+                "Stage 2 mode: LONG (epochs=%d, collapse_guard_patience=%d).",
+                stage_epochs,
+                collapse_guard_patience,
+            )
+        else:
+            stage_epochs = 15
+            collapse_guard_patience = 5
+            logger.info(
+                "Stage 2 mode: LEGACY SHORT (epochs=%d, collapse_guard_patience=%d).",
+                stage_epochs,
+                collapse_guard_patience,
+            )
+    else:
+        stage_epochs = int(stage_cfg.get("epochs", 30))
+        collapse_guard_patience = int(stage_cfg.get("collapse_guard_patience", 3))
 
     train_config = {
         **DEFAULT_ENHANCED_CONFIG,
@@ -309,7 +334,7 @@ def stage_training(
         "num_dme_classes": config["num_dme_classes"],
         "num_dr_classes": config.get("num_dr_classes", 5),
         "batch_size": config["batch_size"],
-        "epochs": stage_cfg.get("epochs", 30),
+        "epochs": stage_epochs,
         "learning_rate": stage_cfg.get("learning_rate", 1e-4),
         "dropout_rate": float(model_cfg.get("dropout_rate", DEFAULT_ENHANCED_CONFIG["dropout_rate"])),
         "early_stopping_patience": stage_cfg.get("early_stopping_patience", 5),
@@ -383,7 +408,9 @@ def stage_training(
                 "collapse_guard_enabled": stage_cfg.get("collapse_guard_enabled", True),
                 "collapse_guard_ratio": stage_cfg.get("collapse_guard_ratio", 0.95),
                 "collapse_guard_min_abs_qwk": stage_cfg.get("collapse_guard_min_abs_qwk", 0.68),
-                "collapse_guard_patience": stage_cfg.get("collapse_guard_patience", 3),
+                "collapse_guard_patience": collapse_guard_patience,
+                "collapse_guard_hard_drop": stage_cfg.get("collapse_guard_hard_drop", 0.20),
+                "collapse_guard_start_epoch": stage_cfg.get("collapse_guard_start_epoch", 1),
                 "stage2_revert_if_worse": stage_cfg.get("stage2_revert_if_worse", True),
                 "stage2_min_improvement": stage_cfg.get("stage2_min_improvement", 0.003),
                 "stage2_freeze_aspp_bn": stage_cfg.get("stage2_freeze_aspp_bn", True),
@@ -461,12 +488,16 @@ def stage_evaluation(
     from evaluate_comprehensive import evaluate_comprehensive
 
     eval_dir = os.path.join(config["output_dir"], f"eval_{stage_name}")
+    eval_cfg = config.get("evaluation", {}) if isinstance(config.get("evaluation"), dict) else {}
     metrics = evaluate_comprehensive(
         model=model,
         dataset=val_ds,
         output_dir=eval_dir,
         metrics_path="comprehensive_metrics.json",
         num_dme_classes=config["num_dme_classes"],
+        calibrate_dme_thresholds=bool(eval_cfg.get("calibrate_dme_thresholds", False)),
+        calibrate_dr_thresholds=bool(eval_cfg.get("calibrate_dr_thresholds", False)),
+        calibration_min_qwk_gain=float(eval_cfg.get("calibration_min_qwk_gain", 1e-4)),
     )
     return metrics
 
@@ -920,6 +951,10 @@ def main():
                         help="Run only stage 1 (no fine-tuning)")
     parser.add_argument("--stage2-only", action="store_true",
                         help="Run only stage 2 using an existing stage1 checkpoint")
+    parser.add_argument("--long-stage2", dest="long_stage2_mode", action="store_true", default=True,
+                        help="Use long Stage 2 schedule (default).")
+    parser.add_argument("--short-stage2", dest="long_stage2_mode", action="store_false",
+                        help="Use legacy short Stage 2 schedule (15 epochs, collapse_guard_patience=5).")
     parser.add_argument("--use-eyepacs", type=str, default=None, metavar="WEIGHTS_PATH",
                         help="Path to EyePACS backbone weights (.weights.h5) saved by "
                              "preprocessing.ipynb. When provided, stage 1 uses EyePACS "
@@ -942,6 +977,7 @@ def main():
     cfg["output_dir"] = args.output_dir
     cfg["checkpoint_dir"] = os.path.join(args.output_dir, "checkpoints")
     cfg["seed"] = args.seed
+    cfg["long_stage2_mode"] = bool(args.long_stage2_mode)
 
     if args.epochs:
         cfg["stage1"]["epochs"] = args.epochs

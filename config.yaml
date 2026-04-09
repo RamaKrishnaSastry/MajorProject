@@ -11,6 +11,7 @@
 # GLOBAL SETTINGS
 # ============================================================
 seed: 42
+long_stage2_mode: true # true=use configured Stage2 (long), false=legacy Stage2 (15 epochs, collapse_guard_patience=5)
 input_shape: [512, 512, 3]
 num_dme_classes: 3 # 0=No DME, 1=Mild, 2=Moderate
 num_dr_classes: 5 # 0=No DR, 1=Mild, 2=Moderate, 3=Severe NPDR, 4=Proliferative
@@ -45,30 +46,30 @@ grid_size: 8
 # ============================================================
 stage1:
   epochs: 40
-  learning_rate: 3.0e-5 # lower LR stops oscillation
+  learning_rate: 2.0e-5 # slightly lower for smoother joint optimisation
   early_stopping_patience: 15
   lr_reduce_patience: 8
   lr_reduce_factor: 0.5
   min_lr: 1.0e-7
   ordinal_loss_weighting: true
-  focal_loss_gamma: 2.0
-  dr_loss_weight: 0.2
+  focal_loss_gamma: 1.5
+  dr_loss_weight: 0.32
   dr_class_weighting: true
-  dr_class_weight_clip_ratio: 6.0
+  dr_class_weight_clip_ratio: 7.5
 
 # ============================================================
 # STAGE 2: FINE-TUNING
 # ============================================================
 stage2:
-  epochs: 35
-  learning_rate: 5.0e-7 # more conservative Stage 2 LR to reduce oscillation
+  epochs: 50
+  learning_rate: 2.0e-7 # safer fine-tuning when starting from strong stage1 checkpoint
   early_stopping_patience: 10
   lr_reduce_patience: 4
   lr_reduce_factor: 0.3
   min_lr: 1.0e-9
   ordinal_loss_weighting: true
-  focal_loss_gamma: 2.0
-  dr_loss_weight: 0.05
+  focal_loss_gamma: 1.5
+  dr_loss_weight: 0.12
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 6.0
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
@@ -76,7 +77,9 @@ stage2:
   collapse_guard_enabled: true
   collapse_guard_ratio: 0.95
   collapse_guard_min_abs_qwk: 0.68
-  collapse_guard_patience: 3
+  collapse_guard_patience: 10
+  collapse_guard_hard_drop: 0.45 # tolerate warmup instability before triggering hard-drop abort
+  collapse_guard_start_epoch: 6 # activate guard after 5 warmup epochs
   stage2_revert_if_worse: true
   stage2_min_improvement: 0.003
 
@@ -128,6 +131,9 @@ evaluation:
   save_confusion_matrix: true
   save_per_class_metrics: true
   save_boundary_confusion: true
+  calibrate_dme_thresholds: true
+  calibrate_dr_thresholds: true
+  calibration_min_qwk_gain: 0.001
 
 # ============================================================
 # ABLATION STUDY
