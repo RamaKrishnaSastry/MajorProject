@@ -15,6 +15,7 @@ import os
 import random
 import time
 import glob
+import csv
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -658,6 +659,58 @@ def _is_better_joint_candidate(candidate: Dict, best: Dict) -> bool:
     return candidate["dr_qwk"] > best["dr_qwk"]
 
 
+def _build_epoch_raw_qwk_rows(history: Dict) -> list:
+    """Build per-epoch raw DME/DR QWK rows from training history."""
+    if not isinstance(history, dict):
+        return []
+
+    dme_series = history.get("val_qwk", []) or []
+    dr_series = history.get("val_dr_qwk", []) or []
+    epochs = max(len(dme_series), len(dr_series))
+    rows = []
+
+    for idx in range(epochs):
+        dme_qwk = float(dme_series[idx]) if idx < len(dme_series) else float("nan")
+        dr_qwk = float(dr_series[idx]) if idx < len(dr_series) else float("nan")
+        rows.append(
+            {
+                "epoch": idx + 1,
+                "dme_qwk_raw": dme_qwk,
+                "dr_qwk_raw": dr_qwk,
+            }
+        )
+
+    return rows
+
+
+def _log_and_save_epoch_raw_qwk_table(stage_name: str, history: Dict, output_dir: str) -> None:
+    """Log and save per-epoch raw QWK table for a stage."""
+    rows = _build_epoch_raw_qwk_rows(history)
+    if not rows:
+        logger.warning("No epoch QWK history found for %s; skipping table output.", stage_name)
+        return
+
+    lines = [
+        "| Epoch | DME_QWK_raw | DR_QWK_raw |",
+        "|---:|---:|---:|",
+    ]
+    for row in rows:
+        dme_str = f"{row['dme_qwk_raw']:.4f}" if np.isfinite(row["dme_qwk_raw"]) else "nan"
+        dr_str = f"{row['dr_qwk_raw']:.4f}" if np.isfinite(row["dr_qwk_raw"]) else "nan"
+        lines.append(f"| {row['epoch']} | {dme_str} | {dr_str} |")
+
+    logger.info("%s raw epoch QWK table:\n%s", stage_name.upper(), "\n".join(lines))
+
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, f"qwk_epoch_table_{stage_name}.csv")
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["epoch", "dme_qwk_raw", "dr_qwk_raw"])
+        for row in rows:
+            writer.writerow([row["epoch"], row["dme_qwk_raw"], row["dr_qwk_raw"]])
+    logger.info("Saved %s raw epoch QWK table to '%s'.", stage_name, csv_path)
+
+
 def aggregate_results(
     all_stage_metrics: Dict,
     output_dir: str,
@@ -858,6 +911,7 @@ def run_pipeline(
         stage1_raw_qwk,
         stage1_cal_qwk,
     )
+    _log_and_save_epoch_raw_qwk_table("stage1", history1, cfg["output_dir"])
 
     stage1_dir = os.path.join(cfg["checkpoint_dir"], "stage1")
     stage1_joint_path = os.path.join(stage1_dir, "best_joint.weights.h5")
@@ -914,6 +968,7 @@ def run_pipeline(
             stage2_raw_qwk,
             stage2_cal_qwk,
         )
+        _log_and_save_epoch_raw_qwk_table("stage2", history2, cfg["output_dir"])
 
     report = aggregate_results(
         all_metrics,
@@ -1005,7 +1060,14 @@ def run_stage2_only(
         stage1_baseline_qwk=stage1_baseline_qwk,
     )
     metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
-    logger.info("Stage 2 QWK: %.4f", metrics2.get("qwk", float("nan")))
+    stage2_raw_qwk = _extract_raw_dme_qwk(metrics2)
+    stage2_cal_qwk = _extract_calibrated_dme_qwk(metrics2)
+    logger.info(
+        "Stage 2 QWK: raw=%.4f | calibrated=%.4f",
+        stage2_raw_qwk,
+        stage2_cal_qwk,
+    )
+    _log_and_save_epoch_raw_qwk_table("stage2", history2, cfg["output_dir"])
 
     report = aggregate_results(
         {"stage2": metrics2},
