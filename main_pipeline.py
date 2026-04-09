@@ -71,7 +71,7 @@ DEFAULT_PIPELINE_CONFIG = {
     "batch_size": 4,
     "val_split": 0.2,
     "augment_train": True,
-    "dme_class_weight_clip_ratio": 9.5,
+    "dme_class_weight_clip_ratio": 7.0,
     # Stage 1: Initial training
     "stage1": {
         "epochs": 40,
@@ -82,8 +82,8 @@ DEFAULT_PIPELINE_CONFIG = {
         "min_lr": 1e-7,
         "ordinal_loss_weighting": True,
         "focal_loss_gamma": 2.0,
-        "dme_label_smoothing": 0.05,
-        "dme_soft_ordinal_weights": True,
+        "dme_label_smoothing": 0.02,
+        "dme_soft_ordinal_weights": False,
         "dr_loss_weight": 0.2,
         "dr_class_weighting": True,
         "dr_class_weight_clip_ratio": 6.0,
@@ -98,7 +98,7 @@ DEFAULT_PIPELINE_CONFIG = {
         "min_lr": 1e-9,
         "ordinal_loss_weighting": True,
         "focal_loss_gamma": 2.0,
-        "dme_label_smoothing": 0.03,
+        "dme_label_smoothing": 0.02,
         "dme_soft_ordinal_weights": True,
         "dr_loss_weight": 0.05,
         "dr_class_weighting": True,
@@ -237,7 +237,7 @@ def stage_data_preparation(
             seed=config["seed"],
             medical_importance=config.get("medical_importance", True),
             ordinal_penalty=config.get("ordinal_penalty", True),
-            dme_class_weight_clip_ratio=config.get("dme_class_weight_clip_ratio", 9.5),
+            dme_class_weight_clip_ratio=config.get("dme_class_weight_clip_ratio", 7.0),
             output_dir=config["output_dir"],
         )
     else:

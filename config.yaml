@@ -25,7 +25,7 @@ batch_size: 8
 val_split: 0.20
 augment_train: true
 use_advanced_loader: true # Use QWK-aware stratified loader
-dme_class_weight_clip_ratio: 9.5 # prevents over-clipping mild-class weight on imbalanced splits
+dme_class_weight_clip_ratio: 7.0 # stricter cap to avoid mild-class overweight instability
 max_batches:
   null # null = process entire validation set for accurate QWK
   # Set to a positive integer to limit batches (useful to
@@ -54,8 +54,8 @@ stage1:
   min_lr: 1.0e-7
   ordinal_loss_weighting: true
   focal_loss_gamma: 1.5
-  dme_label_smoothing: 0.04
-  dme_soft_ordinal_weights: true
+  dme_label_smoothing: 0.02 # reduced smoothing to preserve class separation for QWK
+  dme_soft_ordinal_weights: false # stage1 uses hard ordinal weighting for sharper boundaries
   dr_loss_weight: 0.32
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.5
@@ -66,27 +66,27 @@ stage1:
 stage2:
   epochs: 50
   learning_rate: 2.0e-7 # safer fine-tuning when starting from strong stage1 checkpoint
-  early_stopping_patience: 10
-  lr_reduce_patience: 4
+  early_stopping_patience: 20 # allow long stage2 to recover after mid-run dips
+  lr_reduce_patience: 6
   lr_reduce_factor: 0.3
   min_lr: 1.0e-9
   ordinal_loss_weighting: true
   focal_loss_gamma: 1.5
   dme_label_smoothing: 0.02
-  dme_soft_ordinal_weights: true
+  dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
   dr_loss_weight: 0.12
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 6.0
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
   stage2_checkpoint_use_stage1_baseline: true
   collapse_guard_enabled: true
-  collapse_guard_ratio: 0.95
-  collapse_guard_min_abs_qwk: 0.68
-  collapse_guard_patience: 10
-  collapse_guard_hard_drop: 0.45 # tolerate warmup instability before triggering hard-drop abort
-  collapse_guard_start_epoch: 6 # activate guard after 5 warmup epochs
+  collapse_guard_ratio: 0.90
+  collapse_guard_min_abs_qwk: 0.62
+  collapse_guard_patience: 15
+  collapse_guard_hard_drop: 0.55 # only abort on severe collapse
+  collapse_guard_start_epoch: 10 # activate guard later to ignore long warmup turbulence
   stage2_revert_if_worse: true
-  stage2_min_improvement: 0.003
+  stage2_min_improvement: 0.001
 
 # ============================================================
 # MODEL ARCHITECTURE
