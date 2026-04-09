@@ -550,7 +550,7 @@ def _build_joint_threshold_ladder(
 
 
 def _extract_dr_qwk(metrics: Dict) -> float:
-    """Extract DR QWK regardless of nested or flat metric schema."""
+    """Extract calibrated/reported DR QWK regardless of metric schema."""
     if not isinstance(metrics, dict):
         return float("nan")
 
@@ -567,6 +567,23 @@ def _extract_dr_qwk(metrics: Dict) -> float:
         except (TypeError, ValueError):
             return float("nan")
     return float("nan")
+
+
+def _extract_raw_dr_qwk(metrics: Dict) -> float:
+    """Extract raw (pre-calibration) DR QWK from comprehensive metrics."""
+    if not isinstance(metrics, dict):
+        return float("nan")
+
+    calibration = metrics.get("calibration", {})
+    if isinstance(calibration, dict):
+        dr_cal = calibration.get("dr", {})
+        if isinstance(dr_cal, dict) and "baseline_qwk" in dr_cal:
+            try:
+                return float(dr_cal["baseline_qwk"])
+            except (TypeError, ValueError):
+                pass
+
+    return _extract_dr_qwk(metrics)
 
 
 def _extract_calibrated_dme_qwk(metrics: Dict) -> float:
@@ -592,6 +609,23 @@ def _extract_calibrated_dme_qwk(metrics: Dict) -> float:
                 pass
 
     return float("nan")
+
+
+def _extract_raw_dme_qwk(metrics: Dict) -> float:
+    """Extract raw (pre-calibration) DME QWK from comprehensive metrics."""
+    if not isinstance(metrics, dict):
+        return float("nan")
+
+    calibration = metrics.get("calibration", {})
+    if isinstance(calibration, dict):
+        dme_cal = calibration.get("dme", {})
+        if isinstance(dme_cal, dict) and "baseline_qwk" in dme_cal:
+            try:
+                return float(dme_cal["baseline_qwk"])
+            except (TypeError, ValueError):
+                pass
+
+    return _extract_calibrated_dme_qwk(metrics)
 
 
 def _joint_candidate(stage: str, dme_qwk: float, dr_qwk: float, ladder):
@@ -648,7 +682,7 @@ def aggregate_results(
         "best_qwk": -float("inf"),
         "best_stage": None,
         "target_met": False,
-        "selection_mode": "dme_qwk",
+        "selection_mode": "dme_qwk_raw",
     }
 
     joint_cfg = joint_selection_cfg or {}
@@ -671,15 +705,20 @@ def aggregate_results(
     best_joint = None
 
     for stage, metrics in all_stage_metrics.items():
-        qwk = float(metrics.get("qwk", 0.0))
-        dr_qwk = _extract_dr_qwk(metrics)
+        qwk = _extract_raw_dme_qwk(metrics)
+        dr_qwk = _extract_raw_dr_qwk(metrics)
+        calibrated_qwk = _extract_calibrated_dme_qwk(metrics)
+        calibrated_dr_qwk = _extract_dr_qwk(metrics)
         report["stages"][stage] = {
             "qwk": qwk,
             "dr_qwk": dr_qwk,
+            "qwk_calibrated": calibrated_qwk,
+            "dr_qwk_calibrated": calibrated_dr_qwk,
             "mae": metrics.get("mae", float("nan")),
             "accuracy": metrics.get("accuracy", 0.0),
             "f1_macro": metrics.get("f1_macro", 0.0),
             "target_met": qwk >= 0.80,
+            "target_met_calibrated": calibrated_qwk >= 0.80 if np.isfinite(calibrated_qwk) else False,
         }
         if qwk > report["best_qwk"]:
             report["best_qwk"] = qwk
@@ -717,14 +756,14 @@ def aggregate_results(
     logger.info("Pipeline report saved to '%s'.", report_path)
 
     logger.info(
-        "\nPipeline Summary:\n  Best DME QWK: %.4f (%s)\n  Target ≥0.80 met: %s",
+        "\nPipeline Summary:\n  Best DME QWK (raw): %.4f (%s)\n  Target ≥0.80 met (raw): %s",
         report["best_qwk"],
         report.get("best_stage_by_dme", report["best_stage"]),
         "✅ YES" if report["target_met"] else "❌ NO",
     )
     if best_joint is not None:
         logger.info(
-            "  Best joint stage: %s (DME QWK=%.4f, DR QWK=%.4f, tier=%d)",
+            "  Best joint stage (raw): %s (DME QWK=%.4f, DR QWK=%.4f, tier=%d)",
             report["best_joint_stage"],
             report["best_joint_dme_qwk"],
             report["best_joint_dr_qwk"],
@@ -812,7 +851,13 @@ def run_pipeline(
     )
     metrics1 = stage_evaluation(model, val_ds, cfg, stage_name="stage1")
     all_metrics["stage1"] = metrics1
-    logger.info("Stage 1 QWK: %.4f", metrics1["qwk"])
+    stage1_raw_qwk = _extract_raw_dme_qwk(metrics1)
+    stage1_cal_qwk = _extract_calibrated_dme_qwk(metrics1)
+    logger.info(
+        "Stage 1 QWK: raw=%.4f | calibrated=%.4f",
+        stage1_raw_qwk,
+        stage1_cal_qwk,
+    )
 
     stage1_dir = os.path.join(cfg["checkpoint_dir"], "stage1")
     stage1_joint_path = os.path.join(stage1_dir, "best_joint.weights.h5")
@@ -847,11 +892,12 @@ def run_pipeline(
     if two_stage:
         logger.info("\n" + "=" * 60 + "\nSTAGE 2: Fine-Tuning\n" + "=" * 60)
         logger.info("Stage 2 starting from: %s", stage2_init_weights)
-        stage1_baseline_qwk = _extract_calibrated_dme_qwk(metrics1)
+        stage1_baseline_qwk = stage1_raw_qwk
         if np.isfinite(stage1_baseline_qwk):
             logger.info(
-                "Stage 2 baseline uses calibrated Stage 1 DME QWK=%.4f.",
+                "Stage 2 baseline uses raw Stage 1 DME QWK=%.4f (calibrated=%.4f).",
                 stage1_baseline_qwk,
+                stage1_cal_qwk,
             )
         model, history2, weights2, selected_stage2_ckpt = stage_training(
             train_ds, val_ds, class_weights, cfg,
@@ -861,7 +907,13 @@ def run_pipeline(
         )
         metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
         all_metrics["stage2"] = metrics2
-        logger.info("Stage 2 QWK: %.4f", metrics2["qwk"])
+        stage2_raw_qwk = _extract_raw_dme_qwk(metrics2)
+        stage2_cal_qwk = _extract_calibrated_dme_qwk(metrics2)
+        logger.info(
+            "Stage 2 QWK: raw=%.4f | calibrated=%.4f",
+            stage2_raw_qwk,
+            stage2_cal_qwk,
+        )
 
     report = aggregate_results(
         all_metrics,
@@ -934,7 +986,7 @@ def run_stage2_only(
 
     with open(stage1_metrics_path, "r") as f:
         stage1_metrics = json.load(f)
-    stage1_baseline_qwk = _extract_calibrated_dme_qwk(stage1_metrics)
+    stage1_baseline_qwk = _extract_raw_dme_qwk(stage1_metrics)
     if not np.isfinite(stage1_baseline_qwk):
         raise ValueError(
             "Could not read finite Stage 1 QWK baseline from "
