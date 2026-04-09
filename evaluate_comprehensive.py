@@ -150,6 +150,82 @@ def generate_medical_interpretation(metrics: Dict) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Optional threshold calibration
+# ---------------------------------------------------------------------------
+
+def _predict_from_expected_score(
+    y_proba: np.ndarray,
+    boundaries: np.ndarray,
+    num_classes: int,
+) -> np.ndarray:
+    """Convert class probabilities to ordinal labels via expected-score boundaries."""
+    expected_score = np.sum(
+        y_proba * np.arange(num_classes, dtype=np.float32)[None, :],
+        axis=1,
+    )
+    pred = np.searchsorted(boundaries, expected_score, side="right")
+    return np.clip(pred.astype(np.int32), 0, num_classes - 1)
+
+
+def _optimize_expected_score_thresholds(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    num_classes: int,
+    grid_size: int = 41,
+    n_passes: int = 3,
+    min_gap: float = 1e-3,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Coordinate-search boundaries that maximise QWK on validation data."""
+    if num_classes <= 1:
+        pred = np.zeros_like(y_true, dtype=np.int32)
+        return np.array([], dtype=np.float32), pred, 0.0
+
+    boundaries = np.arange(0.5, float(num_classes - 0.5), 1.0, dtype=np.float32)
+
+    def _objective(b: np.ndarray) -> Tuple[float, np.ndarray]:
+        pred_labels = _predict_from_expected_score(y_proba, b, num_classes)
+        score = compute_quadratic_weighted_kappa(y_true, pred_labels, num_classes)
+        return float(score), pred_labels
+
+    best_qwk, best_pred = _objective(boundaries)
+
+    for _ in range(max(1, int(n_passes))):
+        improved = False
+        for idx in range(len(boundaries)):
+            lower = 0.0 if idx == 0 else boundaries[idx - 1] + min_gap
+            upper = float(num_classes - 1) if idx == len(boundaries) - 1 else boundaries[idx + 1] - min_gap
+
+            if upper <= lower:
+                continue
+
+            candidates = np.linspace(lower, upper, num=max(5, int(grid_size)), dtype=np.float32)
+
+            local_best_qwk = best_qwk
+            local_best_boundary = boundaries[idx]
+            local_best_pred = best_pred
+
+            for candidate in candidates:
+                trial = boundaries.copy()
+                trial[idx] = float(candidate)
+                qwk_value, pred_value = _objective(trial)
+                if qwk_value > local_best_qwk:
+                    local_best_qwk = qwk_value
+                    local_best_boundary = float(candidate)
+                    local_best_pred = pred_value
+
+            if local_best_qwk > best_qwk:
+                boundaries[idx] = local_best_boundary
+                best_qwk = local_best_qwk
+                best_pred = local_best_pred
+                improved = True
+
+        if not improved:
+            break
+
+    return boundaries.astype(np.float32), best_pred.astype(np.int32), float(best_qwk)
+
+
+# ---------------------------------------------------------------------------
 # Comprehensive visualisation
 # ---------------------------------------------------------------------------
 
@@ -303,6 +379,8 @@ def evaluate_dr_grading(
     val_ds: tf.data.Dataset,
     output_dir: str,
     num_dr_classes: int = 5,
+    calibrate_thresholds: bool = False,
+    min_qwk_gain: float = 1e-4,
 ) -> Dict:
     """Evaluate DR head by converting outputs to ordinal grades.
 
@@ -324,6 +402,7 @@ def evaluate_dr_grading(
     """
     dr_true_all: List[int] = []
     dr_pred_all: List[int] = []
+    dr_proba_all: List[np.ndarray] = []
 
     def _extract_dr_prediction(preds):
         if isinstance(preds, dict):
@@ -350,6 +429,7 @@ def evaluate_dr_grading(
 
         # Support both softmax DR classification and legacy scalar regression.
         if dr_out.ndim > 1 and dr_out.shape[-1] > 1:
+            dr_proba_all.append(dr_out)
             dr_pred_grades = np.argmax(dr_out, axis=-1).astype(int)
         else:
             dr_pred_grades = np.clip(
@@ -370,27 +450,73 @@ def evaluate_dr_grading(
         dr_true_all.extend(dr_true_grades.tolist())
         dr_pred_all.extend(dr_pred_grades.tolist())
 
+    dr_true_np = np.asarray(dr_true_all, dtype=np.int32)
+    dr_pred_np = np.asarray(dr_pred_all, dtype=np.int32)
+
+    calibration = {
+        "enabled": bool(calibrate_thresholds),
+        "applied": False,
+    }
+
+    if calibrate_thresholds and dr_proba_all:
+        dr_proba_np = np.concatenate(dr_proba_all, axis=0)
+        base_qwk = float(
+            compute_quadratic_weighted_kappa(dr_true_np, dr_pred_np, num_dr_classes)
+        )
+        boundaries, calibrated_pred, calibrated_qwk = _optimize_expected_score_thresholds(
+            dr_true_np,
+            dr_proba_np,
+            num_classes=num_dr_classes,
+        )
+
+        calibration.update(
+            {
+                "baseline_qwk": base_qwk,
+                "calibrated_qwk": float(calibrated_qwk),
+                "boundaries": [float(x) for x in boundaries.tolist()],
+                "gain": float(calibrated_qwk - base_qwk),
+            }
+        )
+
+        if calibrated_qwk >= base_qwk + float(min_qwk_gain):
+            dr_pred_np = calibrated_pred.astype(np.int32)
+            calibration["applied"] = True
+            logger.info(
+                "DR threshold calibration applied: QWK %.4f -> %.4f (gain=%.4f)",
+                base_qwk,
+                float(calibrated_qwk),
+                float(calibrated_qwk - base_qwk),
+            )
+        else:
+            logger.info(
+                "DR threshold calibration not applied: QWK %.4f -> %.4f (gain=%.4f < %.4f)",
+                base_qwk,
+                float(calibrated_qwk),
+                float(calibrated_qwk - base_qwk),
+                float(min_qwk_gain),
+            )
+
     try:
         from sklearn.metrics import cohen_kappa_score, accuracy_score, confusion_matrix
-        dr_qwk = float(cohen_kappa_score(dr_true_all, dr_pred_all, weights="quadratic"))
-        dr_acc = float(accuracy_score(dr_true_all, dr_pred_all))
-        cm = confusion_matrix(dr_true_all, dr_pred_all, labels=list(range(num_dr_classes)))
+        dr_qwk = float(cohen_kappa_score(dr_true_np, dr_pred_np, weights="quadratic"))
+        dr_acc = float(accuracy_score(dr_true_np, dr_pred_np))
+        cm = confusion_matrix(dr_true_np, dr_pred_np, labels=list(range(num_dr_classes)))
     except ImportError:
         logger.warning("scikit-learn unavailable; DR accuracy/confusion fallback to NumPy.")
-        dr_qwk = float(compute_quadratic_weighted_kappa(np.array(dr_true_all), np.array(dr_pred_all), num_dr_classes))
-        dr_acc = float(np.mean(np.array(dr_true_all) == np.array(dr_pred_all)))
+        dr_qwk = float(compute_quadratic_weighted_kappa(dr_true_np, dr_pred_np, num_dr_classes))
+        dr_acc = float(np.mean(dr_true_np == dr_pred_np))
         cm = np.array(
             [
                 [
-                    int(np.sum((np.array(dr_true_all) == i) & (np.array(dr_pred_all) == j)))
+                    int(np.sum((dr_true_np == i) & (dr_pred_np == j)))
                     for j in range(num_dr_classes)
                 ]
                 for i in range(num_dr_classes)
             ]
         )
 
-    dr_mae = float(np.mean(np.abs(np.array(dr_true_all) - np.array(dr_pred_all))))
-    dr_rmse = float(np.sqrt(np.mean((np.array(dr_true_all) - np.array(dr_pred_all)) ** 2)))
+    dr_mae = float(np.mean(np.abs(dr_true_np - dr_pred_np)))
+    dr_rmse = float(np.sqrt(np.mean((dr_true_np - dr_pred_np) ** 2)))
 
     logger.info("DR Grading Results:")
     logger.info("  QWK:      %.4f", dr_qwk)
@@ -405,6 +531,7 @@ def evaluate_dr_grading(
         "dr_mae": dr_mae,
         "dr_rmse": dr_rmse,
         "confusion_matrix": cm.tolist(),
+        "calibration": calibration,
     }
 
     os.makedirs(output_dir, exist_ok=True)
@@ -427,6 +554,9 @@ def evaluate_comprehensive(
     output_dir: str = ".",
     metrics_path: str = "comprehensive_metrics.json",
     num_dme_classes: int = NUM_DME_CLASSES,
+    calibrate_dme_thresholds: bool = False,
+    calibrate_dr_thresholds: bool = False,
+    calibration_min_qwk_gain: float = 1e-4,
 ) -> Dict:
     """Full evaluation pipeline including QWK, ordinal metrics, and visualisations.
 
@@ -455,6 +585,53 @@ def evaluate_comprehensive(
 
     logger.info("Running comprehensive inference …")
     y_true, y_proba, y_pred = get_predictions(model, dataset, num_dme_classes)
+
+    calibration = {
+        "dme": {
+            "enabled": bool(calibrate_dme_thresholds),
+            "applied": False,
+        },
+        "dr": {
+            "enabled": bool(calibrate_dr_thresholds),
+            "applied": False,
+        },
+    }
+
+    if calibrate_dme_thresholds:
+        baseline_qwk = float(
+            compute_quadratic_weighted_kappa(y_true, y_pred, num_dme_classes)
+        )
+        boundaries, calibrated_pred, calibrated_qwk = _optimize_expected_score_thresholds(
+            y_true,
+            y_proba,
+            num_classes=num_dme_classes,
+        )
+        calibration["dme"].update(
+            {
+                "baseline_qwk": baseline_qwk,
+                "calibrated_qwk": float(calibrated_qwk),
+                "boundaries": [float(x) for x in boundaries.tolist()],
+                "gain": float(calibrated_qwk - baseline_qwk),
+            }
+        )
+
+        if calibrated_qwk >= baseline_qwk + float(calibration_min_qwk_gain):
+            y_pred = calibrated_pred.astype(np.int32)
+            calibration["dme"]["applied"] = True
+            logger.info(
+                "DME threshold calibration applied: QWK %.4f -> %.4f (gain=%.4f)",
+                baseline_qwk,
+                float(calibrated_qwk),
+                float(calibrated_qwk - baseline_qwk),
+            )
+        else:
+            logger.info(
+                "DME threshold calibration not applied: QWK %.4f -> %.4f (gain=%.4f < %.4f)",
+                baseline_qwk,
+                float(calibrated_qwk),
+                float(calibrated_qwk - baseline_qwk),
+                float(calibration_min_qwk_gain),
+            )
 
     # --- Standard classification metrics ---
     accuracy = compute_accuracy(y_true, y_pred)
@@ -505,8 +682,17 @@ def evaluate_comprehensive(
         },
     }
 
-    dr_metrics = evaluate_dr_grading(model, dataset, output_dir)
+    dr_metrics = evaluate_dr_grading(
+        model,
+        dataset,
+        output_dir,
+        calibrate_thresholds=calibrate_dr_thresholds,
+        min_qwk_gain=calibration_min_qwk_gain,
+    )
     metrics["dr"] = dr_metrics
+    if isinstance(dr_metrics, dict) and isinstance(dr_metrics.get("calibration"), dict):
+        calibration["dr"] = dr_metrics["calibration"]
+    metrics["calibration"] = calibration
 
     logger.info("QWK:        %.4f %s", metrics["qwk"], "(✅ TARGET MET)" if metrics["target_met"] else f"(❌ below {QWK_TARGET_THRESHOLD})")
     logger.info("MAE:        %.3f", metrics["mae"])
