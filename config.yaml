@@ -53,7 +53,7 @@ stage1:
   min_lr: 1.0e-7
   ordinal_loss_weighting: true
   focal_loss_gamma: 1.5
-  dr_loss_weight: 0.32
+  dr_loss_weight: 0.25
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.5
 
