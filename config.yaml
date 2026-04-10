@@ -70,15 +70,15 @@ stage1:
 stage2:
   epochs: 50
   learning_rate: 2.0e-7 # safer fine-tuning when starting from strong stage1 checkpoint
-  early_stopping_patience: 20 # allow long stage2 to recover after mid-run dips
-  lr_reduce_patience: 6
+  early_stopping_patience: 30 # allow longer recovery windows before stopping stage2
+  lr_reduce_patience: 8
   lr_reduce_factor: 0.3
   min_lr: 1.0e-9
   ordinal_loss_weighting: true
   focal_loss_gamma: 1.5
-  dme_label_smoothing: 0.01 # one-metric push mode: slightly sharper DME decision boundary
+  dme_label_smoothing: 0.005 # sharpen DME boundary further while keeping stage2 stable
   dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
-  dr_loss_weight: 0.16 # rebalance for DR recovery while keeping DME-oriented Stage 2 setup
+  dr_loss_weight: 0.14 # keep DR pressure while preserving more DME headroom
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 6.0
   warmup_epochs: 3 # shorter warmup to reduce prolonged low-LR drift in stage2
