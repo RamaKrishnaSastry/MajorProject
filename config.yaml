@@ -78,9 +78,9 @@ stage2:
   focal_loss_gamma: 1.5
   dme_label_smoothing: 0.005 # sharpen DME boundary further while keeping stage2 stable
   dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
-  dr_loss_weight: 0.14 # keep DR pressure while preserving more DME headroom
+  dr_loss_weight: 0.13 # slightly lighter DR coupling to recover DME headroom near the 0.8 target
   dr_class_weighting: true
-  dr_class_weight_clip_ratio: 6.0
+  dr_class_weight_clip_ratio: 7.0 # keep stronger minority-grade pressure for DR classwise stability
   warmup_epochs: 3 # shorter warmup to reduce prolonged low-LR drift in stage2
   joint_checkpoint_enabled: true # use joint tiered checkpoint selection to enforce balanced DME/DR gains
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
@@ -88,8 +88,8 @@ stage2:
   collapse_guard_enabled: true
   collapse_guard_ratio: 0.90
   collapse_guard_min_abs_qwk: 0.62
-  collapse_guard_patience: 15
-  collapse_guard_hard_drop: 0.55 # only abort on severe collapse
+  collapse_guard_patience: 20 # allow longer recovery from temporary stage2 turbulence
+  collapse_guard_hard_drop: 0.65 # avoid aborting runs that can recover after transient dips
   collapse_guard_start_epoch: 10 # activate guard later to ignore long warmup turbulence
   stage2_revert_if_worse: true
   stage2_min_improvement: 0.001
@@ -145,6 +145,7 @@ evaluation:
   calibrate_dme_thresholds: true
   calibrate_dr_thresholds: true
   calibration_min_qwk_gain: 0.001
+  dr_calibration_max_accuracy_drop: 0.00 # do not apply DR calibration if it reduces DR accuracy
 
 # ============================================================
 # ABLATION STUDY

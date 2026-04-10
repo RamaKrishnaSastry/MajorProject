@@ -181,6 +181,7 @@ def build_dr_head(
     x: tf.Tensor,
     num_classes: int = 5,
     dropout_rate: float = 0.5,
+    hidden_units: int = 256,
 ) -> tf.Tensor:
     """Build the Diabetic Retinopathy (DR) classification head.
 
@@ -190,6 +191,12 @@ def build_dr_head(
     ----------
     x : tf.Tensor
         Input feature map from ASPP.
+    num_classes : int
+        Number of DR classes.
+    dropout_rate : float
+        Dropout rate applied before output projection.
+    hidden_units : int
+        Width of the residual MLP classifier block.
 
     Returns
     -------
@@ -197,7 +204,20 @@ def build_dr_head(
         DR grade probability distribution.
     """
     x = layers.GlobalAveragePooling2D(name="dr_gap")(x)
-    x = layers.Dense(256, activation="relu", name="dr_fc1")(x)
+    x = layers.LayerNormalization(name="dr_ln0")(x)
+
+    shortcut = layers.Dense(hidden_units, use_bias=False, name="dr_res_proj")(x)
+    shortcut = layers.BatchNormalization(name="dr_res_proj_bn")(shortcut)
+
+    h = layers.Dense(hidden_units, use_bias=False, name="dr_fc1")(x)
+    h = layers.BatchNormalization(name="dr_fc1_bn")(h)
+    h = layers.Activation("swish", name="dr_fc1_act")(h)
+    h = layers.Dropout(dropout_rate * 0.5, name="dr_fc1_dropout")(h)
+    h = layers.Dense(hidden_units, use_bias=False, name="dr_fc2")(h)
+    h = layers.BatchNormalization(name="dr_fc2_bn")(h)
+
+    x = layers.Add(name="dr_residual_add")([shortcut, h])
+    x = layers.Activation("swish", name="dr_residual_act")(x)
     x = layers.Dropout(dropout_rate, name="dr_dropout")(x)
     x = layers.Dense(num_classes, activation="softmax", name="dr_output")(x)
     return x
@@ -211,6 +231,7 @@ def build_dme_head(
     x: tf.Tensor,
     num_classes: int = 3,
     dropout_rate: float = 0.5,
+    hidden_units: int = 256,
 ) -> tf.Tensor:
     """Build the DME (Diabetic Macular Edema) classification head.
 
@@ -220,6 +241,10 @@ def build_dme_head(
         Input feature map from ASPP.
     num_classes : int
         Number of DME severity classes (default: 3 – No DME/Mild/Moderate).
+    dropout_rate : float
+        Dropout rate used in the DME head.
+    hidden_units : int
+        Width of the DME head hidden projection.
 
     Returns
     -------
@@ -227,7 +252,7 @@ def build_dme_head(
         Softmax probability distribution over DME classes.
     """
     x = layers.GlobalAveragePooling2D(name="dme_gap")(x)
-    x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
+    x = layers.Dense(hidden_units, activation="relu", name="dme_fc1")(x)
     x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
     x = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
     return x
@@ -243,6 +268,8 @@ def build_model(
     num_dme_classes: int = 3,
     num_dr_classes: int = 5,
     aspp_filters: int = 256,
+    dr_head_units: int = 256,
+    dme_head_units: int = 256,
     dropout_rate: float = 0.5,
     trainable: bool = True,
     backbone_weights_path: Optional[str] = None,
@@ -263,8 +290,14 @@ def build_model(
         Initial backbone weights (``"imagenet"`` or ``None``).
     num_dme_classes : int
         Number of output classes for the DME head (default: 3).
+    num_dr_classes : int
+        Number of output classes for the DR head (default: 5).
     aspp_filters : int
         Number of filters in each ASPP branch (default: 256).
+    dr_head_units : int
+        Width of the DR head residual MLP.
+    dme_head_units : int
+        Width of the DME head hidden projection.
     trainable : bool
         Whether all model weights should be trainable (default: True).
     backbone_weights_path : str, optional
@@ -298,6 +331,7 @@ def build_model(
         aspp_out,
         num_classes=num_dr_classes,
         dropout_rate=dropout_rate,
+        hidden_units=dr_head_units,
     )
 
     # DME head (3-class classification)
@@ -305,6 +339,7 @@ def build_model(
         aspp_out,
         num_classes=num_dme_classes,
         dropout_rate=dropout_rate,
+        hidden_units=dme_head_units,
     )
 
     # Build model
@@ -335,6 +370,8 @@ def build_model_dme_tuning(
     num_dme_classes: int = 3,
     num_dr_classes: int = 5,
     aspp_filters: int = 256,
+    dr_head_units: int = 256,
+    dme_head_units: int = 256,
     dropout_rate: float = 0.5,
     backbone_weights_path: Optional[str] = None,
 ) -> keras.Model:
@@ -350,8 +387,14 @@ def build_model_dme_tuning(
         Path to pre-trained model weights to load.
     num_dme_classes : int
         Number of DME severity classes (default: 3).
+    num_dr_classes : int
+        Number of DR classes.
     aspp_filters : int
         Number of filters in ASPP.
+    dr_head_units : int
+        Width of the DR head residual MLP.
+    dme_head_units : int
+        Width of the DME head hidden projection.
     backbone_weights_path : str, optional
         Path to a custom ``.h5`` backbone weights file.  When provided, these
         weights are loaded into the backbone before the full model weights are
@@ -369,6 +412,8 @@ def build_model_dme_tuning(
         num_dme_classes=num_dme_classes,
         num_dr_classes=num_dr_classes,
         aspp_filters=aspp_filters,
+        dr_head_units=dr_head_units,
+        dme_head_units=dme_head_units,
         dropout_rate=dropout_rate,
         trainable=True,  # Start with all trainable
         backbone_weights_path=backbone_weights_path,
