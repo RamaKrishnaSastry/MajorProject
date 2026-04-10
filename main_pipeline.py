@@ -348,6 +348,9 @@ def stage_training(
         "input_shape": config["input_shape"],
         "num_dme_classes": config["num_dme_classes"],
         "num_dr_classes": config.get("num_dr_classes", 5),
+        "aspp_filters": int(model_cfg.get("aspp_filters", DEFAULT_ENHANCED_CONFIG.get("aspp_filters", 256))),
+        "dr_head_units": int(model_cfg.get("dr_head_units", DEFAULT_ENHANCED_CONFIG.get("dr_head_units", 256))),
+        "dme_head_units": int(model_cfg.get("dme_head_units", DEFAULT_ENHANCED_CONFIG.get("dme_head_units", 256))),
         "batch_size": config["batch_size"],
         "epochs": stage_epochs,
         "learning_rate": stage_cfg.get("learning_rate", 1e-4),
@@ -516,6 +519,7 @@ def stage_evaluation(
         calibrate_dme_thresholds=bool(eval_cfg.get("calibrate_dme_thresholds", False)),
         calibrate_dr_thresholds=bool(eval_cfg.get("calibrate_dr_thresholds", False)),
         calibration_min_qwk_gain=float(eval_cfg.get("calibration_min_qwk_gain", 1e-4)),
+        dr_calibration_max_accuracy_drop=float(eval_cfg.get("dr_calibration_max_accuracy_drop", 0.0)),
     )
     return metrics
 

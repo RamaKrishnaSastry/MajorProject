@@ -381,6 +381,7 @@ def evaluate_dr_grading(
     num_dr_classes: int = 5,
     calibrate_thresholds: bool = False,
     min_qwk_gain: float = 1e-4,
+    max_accuracy_drop: float = 0.0,
 ) -> Dict:
     """Evaluate DR head by converting outputs to ordinal grades.
 
@@ -453,47 +454,64 @@ def evaluate_dr_grading(
     dr_true_np = np.asarray(dr_true_all, dtype=np.int32)
     dr_pred_np = np.asarray(dr_pred_all, dtype=np.int32)
 
+    base_qwk = float(
+        compute_quadratic_weighted_kappa(dr_true_np, dr_pred_np, num_dr_classes)
+    )
+    base_acc = float(np.mean(dr_true_np == dr_pred_np))
+
     calibration = {
         "enabled": bool(calibrate_thresholds),
         "applied": False,
+        "baseline_qwk": base_qwk,
+        "baseline_accuracy": base_acc,
     }
 
     if calibrate_thresholds and dr_proba_all:
         dr_proba_np = np.concatenate(dr_proba_all, axis=0)
-        base_qwk = float(
-            compute_quadratic_weighted_kappa(dr_true_np, dr_pred_np, num_dr_classes)
-        )
         boundaries, calibrated_pred, calibrated_qwk = _optimize_expected_score_thresholds(
             dr_true_np,
             dr_proba_np,
             num_classes=num_dr_classes,
         )
+        calibrated_acc = float(np.mean(dr_true_np == calibrated_pred))
 
         calibration.update(
             {
-                "baseline_qwk": base_qwk,
                 "calibrated_qwk": float(calibrated_qwk),
+                "calibrated_accuracy": calibrated_acc,
                 "boundaries": [float(x) for x in boundaries.tolist()],
                 "gain": float(calibrated_qwk - base_qwk),
+                "accuracy_delta": float(calibrated_acc - base_acc),
             }
         )
 
-        if calibrated_qwk >= base_qwk + float(min_qwk_gain):
+        qwk_ok = calibrated_qwk >= base_qwk + float(min_qwk_gain)
+        acc_ok = calibrated_acc >= base_acc - float(max_accuracy_drop)
+        if qwk_ok and acc_ok:
             dr_pred_np = calibrated_pred.astype(np.int32)
             calibration["applied"] = True
             logger.info(
-                "DR threshold calibration applied: QWK %.4f -> %.4f (gain=%.4f)",
+                "DR threshold calibration applied: QWK %.4f -> %.4f (gain=%.4f), "
+                "Acc %.4f -> %.4f (delta=%+.4f)",
                 base_qwk,
                 float(calibrated_qwk),
                 float(calibrated_qwk - base_qwk),
+                base_acc,
+                calibrated_acc,
+                float(calibrated_acc - base_acc),
             )
         else:
             logger.info(
-                "DR threshold calibration not applied: QWK %.4f -> %.4f (gain=%.4f < %.4f)",
+                "DR threshold calibration not applied: QWK %.4f -> %.4f (gain=%.4f, min=%.4f), "
+                "Acc %.4f -> %.4f (delta=%+.4f, max_drop=%.4f)",
                 base_qwk,
                 float(calibrated_qwk),
                 float(calibrated_qwk - base_qwk),
                 float(min_qwk_gain),
+                base_acc,
+                calibrated_acc,
+                float(calibrated_acc - base_acc),
+                float(max_accuracy_drop),
             )
 
     try:
@@ -557,6 +575,7 @@ def evaluate_comprehensive(
     calibrate_dme_thresholds: bool = False,
     calibrate_dr_thresholds: bool = False,
     calibration_min_qwk_gain: float = 1e-4,
+    dr_calibration_max_accuracy_drop: float = 0.0,
 ) -> Dict:
     """Full evaluation pipeline including QWK, ordinal metrics, and visualisations.
 
@@ -688,6 +707,7 @@ def evaluate_comprehensive(
         output_dir,
         calibrate_thresholds=calibrate_dr_thresholds,
         min_qwk_gain=calibration_min_qwk_gain,
+        max_accuracy_drop=dr_calibration_max_accuracy_drop,
     )
     metrics["dr"] = dr_metrics
     if isinstance(dr_metrics, dict) and isinstance(dr_metrics.get("calibration"), dict):
