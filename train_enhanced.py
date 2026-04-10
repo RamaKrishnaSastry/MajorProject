@@ -69,6 +69,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "dr_loss_weight": 0.2,
     "dr_class_weighting": True,
     "dr_class_weight_clip_ratio": 6.0,
+    "warmup_epochs": 5,
     "max_batches": None,  # None = process entire validation set for accurate QWK
     "seed": 42,
     # Stage2 safety: if best stage2 QWK does not beat stage1 baseline,
@@ -1228,9 +1229,21 @@ def build_enhanced_callbacks(
             "Stage 2 checkpoint baseline is -inf (independent from Stage 1)."
         )
 
-    callbacks = [
-        LinearWarmupCallback(target_lr=config["learning_rate"], warmup_epochs=5),
-        # QWK tracking callback (must run first to populate val_qwk in logs)
+    callbacks = []
+
+    warmup_epochs = int(config.get("warmup_epochs", 5))
+    if warmup_epochs > 0:
+        callbacks.append(
+            LinearWarmupCallback(
+                target_lr=config["learning_rate"],
+                warmup_epochs=warmup_epochs,
+            )
+        )
+    else:
+        logger.info("Warmup disabled (warmup_epochs=%d).", warmup_epochs)
+
+    # QWK tracking callback (must run first to populate val_qwk in logs)
+    callbacks.append(
         QWKCallback(
             val_dataset=val_dataset,
             num_classes=config["num_dme_classes"],
@@ -1239,8 +1252,8 @@ def build_enhanced_callbacks(
             history_path=config["qwk_history_path"],
             verbose=1,
             max_batches=config.get("max_batches", None),
-        ),
-    ]
+        )
+    )
 
     if bool(config.get("joint_checkpoint_enabled", True)):
         joint_thresholds = _build_joint_qwk_threshold_ladder(

@@ -410,6 +410,9 @@ def build_datasets_advanced(
     medical_importance: bool = True,
     ordinal_penalty: bool = True,
     dme_class_weight_clip_ratio: Optional[float] = 7.0,
+    oversample_minority_enabled: bool = False,
+    oversample_minority_class_id: int = 1,
+    oversample_factor: int = 1,
     output_dir: str = ".",
     save_split_info: bool = True,
     save_balance_plot: bool = True,
@@ -445,6 +448,13 @@ def build_datasets_advanced(
         Use medical domain importance in class weight computation.
     ordinal_penalty : bool
         Use ordinal penalty in class weight computation.
+    oversample_minority_enabled : bool
+        If True, oversample one DME class in the training split by repetition.
+    oversample_minority_class_id : int
+        DME class index to oversample (default 1 = Mild DME).
+    oversample_factor : int
+        Total repetition factor for the selected class (>=1). Example: 2 doubles
+        the selected class count in the training split.
     output_dir : str
         Directory to save artefacts.
     save_split_info : bool
@@ -487,7 +497,32 @@ def build_datasets_advanced(
     train_dr = dr_labels[train_indices]
     val_dr = dr_labels[val_indices]
 
-    # Ordinal class weights (based on DME labels)
+    oversample_factor = max(1, int(oversample_factor))
+    oversample_minority_class_id = int(oversample_minority_class_id)
+
+    if oversample_minority_enabled and oversample_factor > 1:
+        before_counts = {
+            i: int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)
+        }
+        train_paths, train_dme, train_dr = oversample_minority_class(
+            train_paths,
+            train_dme,
+            train_dr,
+            minority_class=oversample_minority_class_id,
+            factor=oversample_factor,
+        )
+        after_counts = {
+            i: int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)
+        }
+        logger.info(
+            "Applied minority oversampling: class=%d factor=%d | train distribution %s -> %s",
+            oversample_minority_class_id,
+            oversample_factor,
+            before_counts,
+            after_counts,
+        )
+
+    # Ordinal class weights (based on effective training labels)
     class_weights = compute_ordinal_class_weights(
         train_dme,
         num_classes=NUM_DME_CLASSES,
@@ -502,16 +537,6 @@ def build_datasets_advanced(
         clip_limit=clip_limit,
         grid_size=grid_size,
     )
-
-    # After the split, before building train_ds:
-    # train_paths, train_dme, train_dr = oversample_minority_class(
-    #     train_paths, train_dme, train_dr, minority_class=1, factor=2
-    # )
-    # logger.info(
-    #     "After oversampling class 1 ×3: %s",
-    #     {i: int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)}
-    # )
-    # Expected output: {0: 141, 1: 99, 2: 156}  ← class 1 now competitive
 
     train_ds = _build_tf_dataset(
         train_paths, train_dme, train_dr, preprocess_fn,
@@ -541,6 +566,9 @@ def build_datasets_advanced(
         "seed": seed,
         "medical_importance": medical_importance,
         "ordinal_penalty": ordinal_penalty,
+        "oversample_minority_enabled": bool(oversample_minority_enabled),
+        "oversample_minority_class_id": int(oversample_minority_class_id),
+        "oversample_factor": int(oversample_factor),
     }
 
     if save_split_info:

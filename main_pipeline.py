@@ -72,6 +72,9 @@ DEFAULT_PIPELINE_CONFIG = {
     "val_split": 0.2,
     "augment_train": True,
     "dme_class_weight_clip_ratio": 7.0,
+    "oversample_minority_enabled": False,
+    "oversample_minority_class_id": 1,
+    "oversample_factor": 1,
     # Stage 1: Initial training
     "stage1": {
         "epochs": 40,
@@ -87,6 +90,7 @@ DEFAULT_PIPELINE_CONFIG = {
         "dr_loss_weight": 0.2,
         "dr_class_weighting": True,
         "dr_class_weight_clip_ratio": 6.0,
+        "warmup_epochs": 5,
     },
     # Stage 2: Fine-tuning (after stage 1)
     "stage2": {
@@ -103,6 +107,7 @@ DEFAULT_PIPELINE_CONFIG = {
         "dr_loss_weight": 0.05,
         "dr_class_weighting": True,
         "dr_class_weight_clip_ratio": 6.0,
+        "warmup_epochs": 5,
         "stage2_freeze_aspp_bn": True,
         "stage2_checkpoint_use_stage1_baseline": True,
         "collapse_guard_enabled": True,
@@ -238,6 +243,9 @@ def stage_data_preparation(
             medical_importance=config.get("medical_importance", True),
             ordinal_penalty=config.get("ordinal_penalty", True),
             dme_class_weight_clip_ratio=config.get("dme_class_weight_clip_ratio", 7.0),
+            oversample_minority_enabled=bool(config.get("oversample_minority_enabled", False)),
+            oversample_minority_class_id=int(config.get("oversample_minority_class_id", 1)),
+            oversample_factor=int(config.get("oversample_factor", 1)),
             output_dir=config["output_dir"],
         )
     else:
@@ -358,6 +366,7 @@ def stage_training(
                 0.1 if stage_name == "stage2" else 0.2,
             )
         ),
+        "warmup_epochs": int(stage_cfg.get("warmup_epochs", 5)),
         "dr_class_weighting": bool(stage_cfg.get("dr_class_weighting", True)),
         "dr_class_weight_clip_ratio": float(stage_cfg.get("dr_class_weight_clip_ratio", 6.0)),
         "max_batches": config.get("max_batches", None),

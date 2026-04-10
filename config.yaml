@@ -26,6 +26,9 @@ val_split: 0.20
 augment_train: true
 use_advanced_loader: true # Use QWK-aware stratified loader
 dme_class_weight_clip_ratio: 7.0 # stricter cap to avoid mild-class overweight instability
+oversample_minority_enabled: false # set true to oversample a minority DME class in train split
+oversample_minority_class_id: 1 # 1=Mild DME
+oversample_factor: 2 # used only when oversample_minority_enabled=true
 max_batches:
   null # null = process entire validation set for accurate QWK
   # Set to a positive integer to limit batches (useful to
@@ -59,6 +62,7 @@ stage1:
   dr_loss_weight: 0.32
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.5
+  warmup_epochs: 5
 
 # ============================================================
 # STAGE 2: FINE-TUNING
@@ -77,6 +81,7 @@ stage2:
   dr_loss_weight: 0.12
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 6.0
+  warmup_epochs: 5
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
   stage2_checkpoint_use_stage1_baseline: true
   collapse_guard_enabled: true
