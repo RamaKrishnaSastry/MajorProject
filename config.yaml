@@ -26,7 +26,7 @@ val_split: 0.20
 augment_train: true
 use_advanced_loader: true # Use QWK-aware stratified loader
 dme_class_weight_clip_ratio: 7.0 # stricter cap to avoid mild-class overweight instability
-oversample_minority_enabled: false # set true to oversample a minority DME class in train split
+oversample_minority_enabled: true # one-metric push mode: improve mild-class recall and DME boundary learning
 oversample_minority_class_id: 1 # 1=Mild DME
 oversample_factor: 2 # used only when oversample_minority_enabled=true
 max_batches:
@@ -76,12 +76,13 @@ stage2:
   min_lr: 1.0e-9
   ordinal_loss_weighting: true
   focal_loss_gamma: 1.5
-  dme_label_smoothing: 0.02
+  dme_label_smoothing: 0.01 # one-metric push mode: slightly sharper DME decision boundary
   dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
-  dr_loss_weight: 0.12
+  dr_loss_weight: 0.10 # one-metric push mode: reduce DR interference to prioritize DME peak
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 6.0
-  warmup_epochs: 5
+  warmup_epochs: 3 # shorter warmup to reduce prolonged low-LR drift in stage2
+  joint_checkpoint_enabled: false # evaluate Stage2 using best_qwk checkpoint (DME-focused)
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
   stage2_checkpoint_use_stage1_baseline: true
   collapse_guard_enabled: true
