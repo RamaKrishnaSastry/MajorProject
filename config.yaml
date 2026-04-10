@@ -72,8 +72,8 @@ stage2:
   learning_rate: 2.0e-7 # safer fine-tuning when starting from strong stage1 checkpoint
   early_stopping_patience: 30 # allow longer recovery windows before stopping stage2
   lr_reduce_patience: 8
-  lr_reduce_factor: 0.3
-  min_lr: 1.0e-9
+  lr_reduce_factor: 0.5 # avoid collapsing LR too fast; helps DME continue improving late-stage
+  min_lr: 1.0e-8 # keep LR from becoming effectively frozen in long stage2 runs
   ordinal_loss_weighting: true
   focal_loss_gamma: 1.5
   dme_label_smoothing: 0.005 # sharpen DME boundary further while keeping stage2 stable
@@ -84,6 +84,7 @@ stage2:
   warmup_epochs: 3 # shorter warmup to reduce prolonged low-LR drift in stage2
   joint_checkpoint_enabled: true # use joint tiered checkpoint selection to enforce balanced DME/DR gains
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
+  stage2_freeze_head_bn: true # freeze DR-head BN in stage2 to stabilize updates on small per-device batches
   stage2_checkpoint_use_stage1_baseline: true
   collapse_guard_enabled: true
   collapse_guard_ratio: 0.90
@@ -104,6 +105,7 @@ model:
   aspp_filters: 256
   dr_head_units: 256
   dme_head_units: 256
+  dme_head_residual: true # enables residual MLP DME head; set false to instantly revert to baseline head
   dropout_rate: 0.4
 
 # ============================================================

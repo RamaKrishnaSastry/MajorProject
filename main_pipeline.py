@@ -351,6 +351,7 @@ def stage_training(
         "aspp_filters": int(model_cfg.get("aspp_filters", DEFAULT_ENHANCED_CONFIG.get("aspp_filters", 256))),
         "dr_head_units": int(model_cfg.get("dr_head_units", DEFAULT_ENHANCED_CONFIG.get("dr_head_units", 256))),
         "dme_head_units": int(model_cfg.get("dme_head_units", DEFAULT_ENHANCED_CONFIG.get("dme_head_units", 256))),
+        "dme_head_residual": bool(model_cfg.get("dme_head_residual", DEFAULT_ENHANCED_CONFIG.get("dme_head_residual", False))),
         "batch_size": config["batch_size"],
         "epochs": stage_epochs,
         "learning_rate": stage_cfg.get("learning_rate", 1e-4),
