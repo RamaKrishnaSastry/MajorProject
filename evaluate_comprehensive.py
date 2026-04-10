@@ -351,7 +351,7 @@ def plot_comprehensive_dashboard(
 
     axes[1, 2].axis("off")
     summary_text = (
-        f"QWK:      {qwk:.4f}  {'✅ TARGET MET' if qwk >= QWK_TARGET_THRESHOLD else '❌ BELOW TARGET'}\n"
+        f"QWK:      {qwk:.4f}  {'TARGET MET' if qwk >= QWK_TARGET_THRESHOLD else 'BELOW TARGET'}\n"
         f"MAE:      {mae:.3f}\n"
         f"RMSE:     {rmse:.3f}\n"
         f"Accuracy: {acc:.4f}\n"
