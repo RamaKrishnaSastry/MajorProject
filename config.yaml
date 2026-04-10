@@ -78,9 +78,9 @@ stage2:
   focal_loss_gamma: 1.5
   dme_label_smoothing: 0.005 # sharpen DME boundary further while keeping stage2 stable
   dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
-  dr_loss_weight: 0.14 # keep DR pressure while preserving more DME headroom
+  dr_loss_weight: 0.13 # tiny DR coupling reduction to recover DME while keeping DR competitive
   dr_class_weighting: true
-  dr_class_weight_clip_ratio: 6.0
+  dr_class_weight_clip_ratio: 7.0 # stronger minority-grade emphasis for better DR classwise accuracy
   warmup_epochs: 3 # shorter warmup to reduce prolonged low-LR drift in stage2
   joint_checkpoint_enabled: true # use joint tiered checkpoint selection to enforce balanced DME/DR gains
   stage2_freeze_aspp_bn: true # freeze ASPP BN along with backbone BN to reduce compute/adaptation
