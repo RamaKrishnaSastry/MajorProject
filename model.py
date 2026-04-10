@@ -232,6 +232,7 @@ def build_dme_head(
     num_classes: int = 3,
     dropout_rate: float = 0.5,
     hidden_units: int = 256,
+    residual_mlp: bool = False,
 ) -> tf.Tensor:
     """Build the DME (Diabetic Macular Edema) classification head.
 
@@ -245,6 +246,8 @@ def build_dme_head(
         Dropout rate used in the DME head.
     hidden_units : int
         Width of the DME head hidden projection.
+    residual_mlp : bool
+        Use a residual MLP classifier block instead of a single dense layer.
 
     Returns
     -------
@@ -252,8 +255,21 @@ def build_dme_head(
         Softmax probability distribution over DME classes.
     """
     x = layers.GlobalAveragePooling2D(name="dme_gap")(x)
-    x = layers.Dense(hidden_units, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
+    if residual_mlp:
+        x = layers.LayerNormalization(name="dme_ln0")(x)
+        shortcut = layers.Dense(hidden_units, use_bias=False, name="dme_res_proj")(x)
+
+        h = layers.Dense(hidden_units, name="dme_fc1")(x)
+        h = layers.Activation("swish", name="dme_fc1_act")(h)
+        h = layers.Dropout(dropout_rate * 0.5, name="dme_fc1_dropout")(h)
+        h = layers.Dense(hidden_units, name="dme_fc2")(h)
+
+        x = layers.Add(name="dme_residual_add")([shortcut, h])
+        x = layers.Activation("swish", name="dme_residual_act")(x)
+        x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
+    else:
+        x = layers.Dense(hidden_units, activation="relu", name="dme_fc1")(x)
+        x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
     x = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
     return x
 
@@ -270,6 +286,7 @@ def build_model(
     aspp_filters: int = 256,
     dr_head_units: int = 256,
     dme_head_units: int = 256,
+    dme_head_residual: bool = False,
     dropout_rate: float = 0.5,
     trainable: bool = True,
     backbone_weights_path: Optional[str] = None,
@@ -298,6 +315,8 @@ def build_model(
         Width of the DR head residual MLP.
     dme_head_units : int
         Width of the DME head hidden projection.
+    dme_head_residual : bool
+        Whether to use a residual MLP block in the DME head.
     trainable : bool
         Whether all model weights should be trainable (default: True).
     backbone_weights_path : str, optional
@@ -340,6 +359,7 @@ def build_model(
         num_classes=num_dme_classes,
         dropout_rate=dropout_rate,
         hidden_units=dme_head_units,
+        residual_mlp=dme_head_residual,
     )
 
     # Build model
@@ -372,6 +392,7 @@ def build_model_dme_tuning(
     aspp_filters: int = 256,
     dr_head_units: int = 256,
     dme_head_units: int = 256,
+    dme_head_residual: bool = False,
     dropout_rate: float = 0.5,
     backbone_weights_path: Optional[str] = None,
 ) -> keras.Model:
@@ -395,6 +416,8 @@ def build_model_dme_tuning(
         Width of the DR head residual MLP.
     dme_head_units : int
         Width of the DME head hidden projection.
+    dme_head_residual : bool
+        Whether to use a residual MLP block in the DME head.
     backbone_weights_path : str, optional
         Path to a custom ``.h5`` backbone weights file.  When provided, these
         weights are loaded into the backbone before the full model weights are
@@ -414,6 +437,7 @@ def build_model_dme_tuning(
         aspp_filters=aspp_filters,
         dr_head_units=dr_head_units,
         dme_head_units=dme_head_units,
+        dme_head_residual=dme_head_residual,
         dropout_rate=dropout_rate,
         trainable=True,  # Start with all trainable
         backbone_weights_path=backbone_weights_path,
@@ -430,7 +454,7 @@ def build_model_dme_tuning(
         layer.trainable = False
 
     # ✅ UNFREEZE only DME head layers
-    dme_layer_patterns = {"dme_gap", "dme_fc1", "dme_dropout", "dme_risk"}
+    dme_layer_patterns = ("dme_",)
     for layer in model.layers:
         if any(pattern in layer.name for pattern in dme_layer_patterns):
             layer.trainable = True

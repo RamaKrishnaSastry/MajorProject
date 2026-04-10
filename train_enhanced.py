@@ -50,6 +50,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "aspp_filters": 256,
     "dr_head_units": 256,
     "dme_head_units": 256,
+    "dme_head_residual": False,
     "learning_rate": 1e-4,
     "dropout_rate": 0.5,
     "batch_size": 8,
@@ -89,6 +90,7 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "collapse_guard_start_epoch": 1,
     # Stage2 BN control: freeze ASPP BN with backbone BN to reduce adaptation cost.
     "stage2_freeze_aspp_bn": True,
+    "stage2_freeze_head_bn": True,
     # Joint DME+DR checkpoint policy.
     "joint_checkpoint_enabled": True,
     "joint_qwk_thresholds": [
@@ -1353,8 +1355,9 @@ def _freeze_backbone_batchnorm_layers(
     model: keras.Model,
     backbone_layer_name: str = "resnet50_conv4_backbone",
     freeze_aspp_bn: bool = True,
+    freeze_head_bn: bool = False,
 ) -> int:
-    """Freeze BatchNorm layers inside backbone (and optionally ASPP)."""
+    """Freeze BatchNorm layers inside backbone and selected head components."""
     count = 0
     stack = []
     try:
@@ -1365,6 +1368,12 @@ def _freeze_backbone_batchnorm_layers(
     if freeze_aspp_bn:
         for layer in model.layers:
             if layer.name.startswith("aspp_"):
+                stack.append(layer)
+
+    if freeze_head_bn:
+        # DR head contains BN layers and is sensitive to tiny per-device batches.
+        for layer in model.layers:
+            if layer.name.startswith("dr_"):
                 stack.append(layer)
 
     if not stack:
@@ -1421,6 +1430,7 @@ def train_enhanced(
             aspp_filters=int(cfg.get("aspp_filters", 256)),
             dr_head_units=int(cfg.get("dr_head_units", 256)),
             dme_head_units=int(cfg.get("dme_head_units", 256)),
+            dme_head_residual=bool(cfg.get("dme_head_residual", False)),
             dropout_rate=float(cfg.get("dropout_rate", 0.5)),
             backbone_weights_path=backbone_weights_path,
         )
@@ -1450,6 +1460,7 @@ def train_enhanced(
             aspp_filters=int(cfg.get("aspp_filters", 256)),
             dr_head_units=int(cfg.get("dr_head_units", 256)),
             dme_head_units=int(cfg.get("dme_head_units", 256)),
+            dme_head_residual=bool(cfg.get("dme_head_residual", False)),
             dropout_rate=float(cfg.get("dropout_rate", 0.5)),
             trainable=True,
             backbone_weights_path=model_backbone_weights_path,
@@ -1565,15 +1576,19 @@ def train_enhanced(
                 backbone_layer = model.get_layer("resnet50_conv4_backbone")
                 backbone_layer.trainable = True
                 freeze_aspp_bn = bool(cfg.get("stage2_freeze_aspp_bn", True))
+                freeze_head_bn = bool(cfg.get("stage2_freeze_head_bn", True))
                 bn_frozen = _freeze_backbone_batchnorm_layers(
                     model,
                     freeze_aspp_bn=freeze_aspp_bn,
+                    freeze_head_bn=freeze_head_bn,
                 )
                 trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
                 logger.info(
-                    "✅ Stage 2: Backbone UNFROZEN with %d BN layers frozen (freeze_aspp_bn=%s). Trainable params: %d",
+                    "✅ Stage 2: Backbone UNFROZEN with %d BN layers frozen "
+                    "(freeze_aspp_bn=%s, freeze_head_bn=%s). Trainable params: %d",
                     bn_frozen,
                     freeze_aspp_bn,
+                    freeze_head_bn,
                     trainable_count,
                 )
             except Exception as e:
