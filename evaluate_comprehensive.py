@@ -15,14 +15,13 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
 from evaluate import (
-    get_predictions,
     compute_accuracy,
     compute_f1,
     compute_roc_auc,
@@ -225,6 +224,163 @@ def _optimize_expected_score_thresholds(
     return boundaries.astype(np.float32), best_pred.astype(np.int32), float(best_qwk)
 
 
+def _extract_model_outputs(preds) -> Tuple[tf.Tensor, Optional[tf.Tensor]]:
+    """Extract DME and DR outputs from model predictions."""
+    if isinstance(preds, dict):
+        dme_out = preds.get("dme_risk")
+        dr_out = preds.get("dr_output")
+        return dme_out, dr_out
+    if isinstance(preds, (list, tuple)):
+        if len(preds) >= 2:
+            # Repo convention: [dr_output, dme_risk]
+            return preds[1], preds[0]
+        if len(preds) == 1:
+            return preds[0], None
+    return preds, None
+
+
+def _extract_label_tensors(batch_y) -> Tuple[tf.Tensor, Optional[tf.Tensor]]:
+    """Extract DME and DR targets from dataset labels."""
+    if isinstance(batch_y, dict):
+        return batch_y["dme_risk"], batch_y.get("dr_output")
+    if isinstance(batch_y, (list, tuple)):
+        if len(batch_y) >= 2:
+            # Repo convention: [dr_output, dme_risk]
+            return batch_y[1], batch_y[0]
+        if len(batch_y) == 1:
+            return batch_y[0], None
+    return batch_y, None
+
+
+def _build_tta_views(batch_x: tf.Tensor, tta_mode: str) -> List[tf.Tensor]:
+    """Build TTA views for a batch (geometric-only to preserve lesion appearance)."""
+    mode = str(tta_mode or "none").lower()
+    if mode in {"", "none", "off", "false", "0"}:
+        return [batch_x]
+
+    if mode in {"flip", "hflip"}:
+        return [batch_x, tf.image.flip_left_right(batch_x)]
+
+    if mode in {"rot4", "dihedral8", "d4"}:
+        rots = [tf.image.rot90(batch_x, k=i) for i in range(4)]
+        flips = [tf.image.flip_left_right(r) for r in rots]
+        if mode == "rot4":
+            return rots
+        return rots + flips
+
+    logger.warning("Unknown TTA mode '%s'; falling back to no TTA.", tta_mode)
+    return [batch_x]
+
+
+def _predict_batch_with_tta(
+    model: keras.Model,
+    batch_x: tf.Tensor,
+    tta_mode: str,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Predict one batch with optional TTA and average outputs."""
+    views = _build_tta_views(batch_x, tta_mode)
+
+    dme_accum = None
+    dr_accum = None
+
+    for view in views:
+        preds = model(view, training=False)
+        dme_out, dr_out = _extract_model_outputs(preds)
+
+        dme_np = dme_out.numpy()
+        dme_accum = dme_np if dme_accum is None else (dme_accum + dme_np)
+
+        if dr_out is not None:
+            dr_np = dr_out.numpy()
+            dr_accum = dr_np if dr_accum is None else (dr_accum + dr_np)
+
+    dme_mean = dme_accum / float(len(views))
+    dr_mean = None if dr_accum is None else (dr_accum / float(len(views)))
+    return dme_mean, dr_mean
+
+
+def _collect_multitask_predictions(
+    model: keras.Model,
+    dataset: tf.data.Dataset,
+    num_dme_classes: int,
+    ensemble_weight_paths: Optional[Sequence[str]] = None,
+    tta_mode: str = "none",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """Collect DME and DR predictions with optional checkpoint ensembling + TTA."""
+    paths: List[Optional[str]] = []
+    for path in (ensemble_weight_paths or []):
+        if not path:
+            continue
+        norm = os.path.normpath(str(path))
+        if os.path.exists(norm) and norm not in paths:
+            paths.append(norm)
+    if not paths:
+        paths = [None]
+
+    y_true_dme = None
+    y_true_dr = None
+    dme_sum = None
+    dr_sum = None
+
+    for model_idx, weight_path in enumerate(paths):
+        if weight_path is not None:
+            model.load_weights(weight_path)
+
+        dme_batches = []
+        dr_batches = []
+        batch_true_dme = []
+        batch_true_dr = []
+
+        for batch_x, batch_y in dataset:
+            dme_np, dr_np = _predict_batch_with_tta(model, batch_x, tta_mode)
+            dme_batches.append(dme_np)
+            if dr_np is not None:
+                dr_batches.append(dr_np)
+
+            if model_idx == 0:
+                dme_target, dr_target = _extract_label_tensors(batch_y)
+                dme_target_np = dme_target.numpy()
+                if dme_target_np.ndim > 1:
+                    batch_true_dme.append(np.argmax(dme_target_np, axis=-1))
+                else:
+                    batch_true_dme.append(dme_target_np.astype(np.int32).reshape(-1))
+
+                if dr_target is not None:
+                    dr_target_np = dr_target.numpy()
+                    if dr_target_np.ndim > 1 and dr_target_np.shape[-1] > 1:
+                        batch_true_dr.append(np.argmax(dr_target_np, axis=-1))
+                    else:
+                        batch_true_dr.append(
+                            np.clip(
+                                np.round(dr_target_np.reshape(-1)).astype(np.int32),
+                                0,
+                                4,
+                            )
+                        )
+
+        dme_np_all = np.concatenate(dme_batches, axis=0)
+        dme_sum = dme_np_all if dme_sum is None else (dme_sum + dme_np_all)
+
+        if dr_batches:
+            dr_np_all = np.concatenate(dr_batches, axis=0)
+            dr_sum = dr_np_all if dr_sum is None else (dr_sum + dr_np_all)
+
+        if model_idx == 0:
+            y_true_dme = np.concatenate(batch_true_dme, axis=0).astype(np.int32)
+            if batch_true_dr:
+                y_true_dr = np.concatenate(batch_true_dr, axis=0).astype(np.int32)
+
+    dme_proba = dme_sum / float(len(paths))
+    dr_output = None if dr_sum is None else (dr_sum / float(len(paths)))
+    y_pred_dme = np.argmax(dme_proba, axis=-1).astype(np.int32)
+
+    if y_true_dr is None:
+        # DR labels may be absent in some custom datasets; keep shape consistent.
+        y_true_dr = np.zeros_like(y_true_dme, dtype=np.int32)
+
+    return y_true_dme, dme_proba, y_pred_dme, y_true_dr, dr_output
+
+
 # ---------------------------------------------------------------------------
 # Comprehensive visualisation
 # ---------------------------------------------------------------------------
@@ -382,6 +538,8 @@ def evaluate_dr_grading(
     calibrate_thresholds: bool = False,
     min_qwk_gain: float = 1e-4,
     max_accuracy_drop: float = 0.0,
+    dr_true_cached: Optional[np.ndarray] = None,
+    dr_output_cached: Optional[np.ndarray] = None,
 ) -> Dict:
     """Evaluate DR head by converting outputs to ordinal grades.
 
@@ -423,36 +581,49 @@ def evaluate_dr_grading(
             return batch_y[0]
         return batch_y
 
-    for batch_x, batch_y in val_ds:
-        preds = model(batch_x, training=False)
-        dr_out = _extract_dr_prediction(preds).numpy()
-        dr_gt = _extract_dr_target(batch_y).numpy()
-
-        # Support both softmax DR classification and legacy scalar regression.
+    if dr_true_cached is not None and dr_output_cached is not None:
+        dr_true_np = np.asarray(dr_true_cached, dtype=np.int32)
+        dr_out = np.asarray(dr_output_cached)
         if dr_out.ndim > 1 and dr_out.shape[-1] > 1:
             dr_proba_all.append(dr_out)
-            dr_pred_grades = np.argmax(dr_out, axis=-1).astype(int)
+            dr_pred_np = np.argmax(dr_out, axis=-1).astype(np.int32)
         else:
-            dr_pred_grades = np.clip(
-                np.round(dr_out.reshape(-1)).astype(int),
+            dr_pred_np = np.clip(
+                np.round(dr_out.reshape(-1)).astype(np.int32),
                 0,
                 num_dr_classes - 1,
             )
+    else:
+        for batch_x, batch_y in val_ds:
+            preds = model(batch_x, training=False)
+            dr_out = _extract_dr_prediction(preds).numpy()
+            dr_gt = _extract_dr_target(batch_y).numpy()
 
-        if dr_gt.ndim > 1 and dr_gt.shape[-1] > 1:
-            dr_true_grades = np.argmax(dr_gt, axis=-1).astype(int)
-        else:
-            dr_true_grades = np.clip(
-                np.round(dr_gt.reshape(-1)).astype(int),
-                0,
-                num_dr_classes - 1,
-            )
+            # Support both softmax DR classification and legacy scalar regression.
+            if dr_out.ndim > 1 and dr_out.shape[-1] > 1:
+                dr_proba_all.append(dr_out)
+                dr_pred_grades = np.argmax(dr_out, axis=-1).astype(int)
+            else:
+                dr_pred_grades = np.clip(
+                    np.round(dr_out.reshape(-1)).astype(int),
+                    0,
+                    num_dr_classes - 1,
+                )
 
-        dr_true_all.extend(dr_true_grades.tolist())
-        dr_pred_all.extend(dr_pred_grades.tolist())
+            if dr_gt.ndim > 1 and dr_gt.shape[-1] > 1:
+                dr_true_grades = np.argmax(dr_gt, axis=-1).astype(int)
+            else:
+                dr_true_grades = np.clip(
+                    np.round(dr_gt.reshape(-1)).astype(int),
+                    0,
+                    num_dr_classes - 1,
+                )
 
-    dr_true_np = np.asarray(dr_true_all, dtype=np.int32)
-    dr_pred_np = np.asarray(dr_pred_all, dtype=np.int32)
+            dr_true_all.extend(dr_true_grades.tolist())
+            dr_pred_all.extend(dr_pred_grades.tolist())
+
+        dr_true_np = np.asarray(dr_true_all, dtype=np.int32)
+        dr_pred_np = np.asarray(dr_pred_all, dtype=np.int32)
 
     base_qwk = float(
         compute_quadratic_weighted_kappa(dr_true_np, dr_pred_np, num_dr_classes)
@@ -576,6 +747,8 @@ def evaluate_comprehensive(
     calibrate_dr_thresholds: bool = False,
     calibration_min_qwk_gain: float = 1e-4,
     dr_calibration_max_accuracy_drop: float = 0.0,
+    tta_mode: str = "none",
+    ensemble_weight_paths: Optional[Sequence[str]] = None,
 ) -> Dict:
     """Full evaluation pipeline including QWK, ordinal metrics, and visualisations.
 
@@ -603,7 +776,18 @@ def evaluate_comprehensive(
     names = class_names or DME_CLASS_NAMES[:num_dme_classes]
 
     logger.info("Running comprehensive inference …")
-    y_true, y_proba, y_pred = get_predictions(model, dataset, num_dme_classes)
+    y_true, y_proba, y_pred, dr_true_cached, dr_output_cached = _collect_multitask_predictions(
+        model=model,
+        dataset=dataset,
+        num_dme_classes=num_dme_classes,
+        ensemble_weight_paths=ensemble_weight_paths,
+        tta_mode=tta_mode,
+    )
+
+    if ensemble_weight_paths:
+        logger.info("Checkpoint ensemble enabled with %d model(s).", len([p for p in ensemble_weight_paths if p]))
+    if str(tta_mode).lower() not in {"", "none", "off", "false", "0"}:
+        logger.info("TTA enabled (mode=%s).", tta_mode)
 
     calibration = {
         "dme": {
@@ -708,6 +892,8 @@ def evaluate_comprehensive(
         calibrate_thresholds=calibrate_dr_thresholds,
         min_qwk_gain=calibration_min_qwk_gain,
         max_accuracy_drop=dr_calibration_max_accuracy_drop,
+        dr_true_cached=dr_true_cached,
+        dr_output_cached=dr_output_cached,
     )
     metrics["dr"] = dr_metrics
     if isinstance(dr_metrics, dict) and isinstance(dr_metrics.get("calibration"), dict):

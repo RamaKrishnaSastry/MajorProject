@@ -142,6 +142,15 @@ DEFAULT_PIPELINE_CONFIG = {
         "prioritize_dr_accuracy": False,
         "dr_accuracy_epsilon": 0.001,
     },
+    "evaluation": {
+        "calibrate_dme_thresholds": False,
+        "calibrate_dr_thresholds": False,
+        "calibration_min_qwk_gain": 1e-4,
+        "dr_calibration_max_accuracy_drop": 0.0,
+        "tta_mode": "none",
+        "checkpoint_ensemble_enabled": False,
+        "checkpoint_ensemble_max_models": 3,
+    },
 }
 
 
@@ -498,6 +507,7 @@ def stage_evaluation(
     val_ds,
     config: Dict,
     stage_name: str = "stage1",
+    selected_checkpoint: Optional[str] = None,
 ) -> Dict:
     """Evaluation stage: comprehensive QWK metrics.
 
@@ -521,6 +531,28 @@ def stage_evaluation(
 
     eval_dir = os.path.join(config["output_dir"], f"eval_{stage_name}")
     eval_cfg = config.get("evaluation", {}) if isinstance(config.get("evaluation"), dict) else {}
+
+    ensemble_paths = []
+    if bool(eval_cfg.get("checkpoint_ensemble_enabled", False)):
+        stage_ckpt_dir = os.path.join(config.get("checkpoint_dir", "checkpoints"), stage_name)
+        candidates = [
+            selected_checkpoint,
+            os.path.join(stage_ckpt_dir, "best_joint.weights.h5"),
+            os.path.join(stage_ckpt_dir, "best_qwk.weights.h5"),
+            os.path.join(stage_ckpt_dir, "best_dr.weights.h5"),
+        ]
+        seen = set()
+        for path in candidates:
+            if not path:
+                continue
+            norm = os.path.normpath(path)
+            if os.path.exists(norm) and norm not in seen:
+                ensemble_paths.append(norm)
+                seen.add(norm)
+
+        max_models = int(eval_cfg.get("checkpoint_ensemble_max_models", 3))
+        if max_models > 0:
+            ensemble_paths = ensemble_paths[:max_models]
     metrics = evaluate_comprehensive(
         model=model,
         dataset=val_ds,
@@ -531,6 +563,8 @@ def stage_evaluation(
         calibrate_dr_thresholds=bool(eval_cfg.get("calibrate_dr_thresholds", False)),
         calibration_min_qwk_gain=float(eval_cfg.get("calibration_min_qwk_gain", 1e-4)),
         dr_calibration_max_accuracy_drop=float(eval_cfg.get("dr_calibration_max_accuracy_drop", 0.0)),
+        tta_mode=str(eval_cfg.get("tta_mode", "none")),
+        ensemble_weight_paths=ensemble_paths,
     )
     return metrics
 
@@ -926,7 +960,13 @@ def run_pipeline(
         eyepacs_backbone=eyepacs_backbone,
         backbone_weights_path=backbone_weights_path,
     )
-    metrics1 = stage_evaluation(model, val_ds, cfg, stage_name="stage1")
+    metrics1 = stage_evaluation(
+        model,
+        val_ds,
+        cfg,
+        stage_name="stage1",
+        selected_checkpoint=selected_stage1_ckpt,
+    )
     all_metrics["stage1"] = metrics1
     stage1_raw_qwk = _extract_raw_dme_qwk(metrics1)
     stage1_cal_qwk = _extract_calibrated_dme_qwk(metrics1)
@@ -983,7 +1023,13 @@ def run_pipeline(
             pretrained_weights=stage2_init_weights,
             stage1_baseline_qwk=stage1_baseline_qwk,
         )
-        metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
+        metrics2 = stage_evaluation(
+            model,
+            val_ds,
+            cfg,
+            stage_name="stage2",
+            selected_checkpoint=selected_stage2_ckpt,
+        )
         all_metrics["stage2"] = metrics2
         stage2_raw_qwk = _extract_raw_dme_qwk(metrics2)
         stage2_cal_qwk = _extract_calibrated_dme_qwk(metrics2)
@@ -1083,7 +1129,13 @@ def run_stage2_only(
         pretrained_weights=stage2_init_weights,
         stage1_baseline_qwk=stage1_baseline_qwk,
     )
-    metrics2 = stage_evaluation(model, val_ds, cfg, stage_name="stage2")
+    metrics2 = stage_evaluation(
+        model,
+        val_ds,
+        cfg,
+        stage_name="stage2",
+        selected_checkpoint=selected_stage2_ckpt,
+    )
     stage2_raw_qwk = _extract_raw_dme_qwk(metrics2)
     stage2_cal_qwk = _extract_calibrated_dme_qwk(metrics2)
     logger.info(

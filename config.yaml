@@ -148,6 +148,9 @@ evaluation:
   calibrate_dr_thresholds: true
   calibration_min_qwk_gain: 0.001
   dr_calibration_max_accuracy_drop: 0.00 # do not apply DR calibration if it reduces DR accuracy
+  tta_mode: dihedral8 # none|hflip|rot4|dihedral8 (geometric-only TTA)
+  checkpoint_ensemble_enabled: true # average probs from selected/best checkpoints
+  checkpoint_ensemble_max_models: 3
 
 # ============================================================
 # ABLATION STUDY
