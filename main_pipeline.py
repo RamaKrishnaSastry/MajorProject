@@ -139,6 +139,8 @@ DEFAULT_PIPELINE_CONFIG = {
         "fallback_step": 0.02,
         "min_threshold": 0.60,
         "dme_floor": 0.70,
+        "prioritize_dr_accuracy": False,
+        "dr_accuracy_epsilon": 0.001,
     },
 }
 
@@ -415,6 +417,14 @@ def stage_training(
             "joint_dme_floor": stage_cfg.get(
                 "joint_dme_floor",
                 joint_cfg.get("dme_floor", 0.70),
+            ),
+            "joint_prioritize_dr_accuracy": stage_cfg.get(
+                "joint_prioritize_dr_accuracy",
+                joint_cfg.get("prioritize_dr_accuracy", False),
+            ),
+            "joint_dr_accuracy_epsilon": stage_cfg.get(
+                "joint_dr_accuracy_epsilon",
+                joint_cfg.get("dr_accuracy_epsilon", 0.001),
             ),
         }
     )

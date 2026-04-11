@@ -645,16 +645,20 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
         filepath: str,
         thresholds: List[Tuple[float, float]],
         dme_floor: float = 0.0,
+        prioritize_dr_accuracy: bool = False,
+        dr_accuracy_epsilon: float = 1e-4,
         verbose: int = 1,
     ):
         super().__init__()
         self.filepath = filepath
         self.thresholds = thresholds
         self.dme_floor = float(dme_floor)
+        self.prioritize_dr_accuracy = bool(prioritize_dr_accuracy)
+        self.dr_accuracy_epsilon = float(dr_accuracy_epsilon)
         self.verbose = verbose
         self.best = None
 
-    def _make_candidate(self, dme_qwk: float, dr_qwk: float) -> Dict[str, float]:
+    def _make_candidate(self, dme_qwk: float, dr_qwk: float, dr_acc: float = float("nan")) -> Dict[str, float]:
         tier_index = len(self.thresholds)
         for idx, (dme_t, dr_t) in enumerate(self.thresholds):
             if dme_qwk >= dme_t and dr_qwk >= dr_t:
@@ -670,12 +674,26 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
             "harmonic": float(harmonic),
             "dme_qwk": float(dme_qwk),
             "dr_qwk": float(dr_qwk),
+            "dr_acc": float(dr_acc),
         }
 
-    @staticmethod
-    def _is_better(candidate: Dict[str, float], best: Dict[str, float]) -> bool:
+    def _is_better(self, candidate: Dict[str, float], best: Dict[str, float]) -> bool:
         if int(candidate["tier_index"]) != int(best["tier_index"]):
             return candidate["tier_index"] < best["tier_index"]
+        if self.prioritize_dr_accuracy:
+            cand_acc = candidate.get("dr_acc", float("nan"))
+            best_acc = best.get("dr_acc", float("nan"))
+            cand_finite = np.isfinite(cand_acc)
+            best_finite = np.isfinite(best_acc)
+            if cand_finite and best_finite:
+                if cand_acc > best_acc + self.dr_accuracy_epsilon:
+                    return True
+                if best_acc > cand_acc + self.dr_accuracy_epsilon:
+                    return False
+            elif cand_finite and not best_finite:
+                return True
+            elif best_finite and not cand_finite:
+                return False
         if candidate["harmonic"] != best["harmonic"]:
             return candidate["harmonic"] > best["harmonic"]
         if candidate["dme_qwk"] != best["dme_qwk"]:
@@ -688,12 +706,13 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
         dr_qwk = logs.get("val_dr_qwk", None)
         if dme_qwk is None or dr_qwk is None:
             return
+        dr_acc = logs.get("val_dr_accuracy", logs.get("val_dr_output_dr_accuracy", float("nan")))
 
         dme_value = float(dme_qwk)
         dr_value = float(dr_qwk)
         blocked_by_floor = dme_value < self.dme_floor
 
-        candidate = self._make_candidate(dme_value, dr_value)
+        candidate = self._make_candidate(dme_value, dr_value, dr_acc)
         tier_idx = int(candidate["tier_index"])
         if tier_idx < len(self.thresholds):
             dme_t, dr_t = self.thresholds[tier_idx]
@@ -719,10 +738,11 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
                     )
                 else:
                     logger.info(
-                        "JointQWKCheckpoint: improved (%s, dme=%.4f, dr=%.4f, h=%.4f) -> saved to '%s'.",
+                        "JointQWKCheckpoint: improved (%s, dme=%.4f, dr=%.4f, dr_acc=%.4f, h=%.4f) -> saved to '%s'.",
                         tier_label,
                         candidate["dme_qwk"],
                         candidate["dr_qwk"],
+                        candidate["dr_acc"],
                         candidate["harmonic"],
                         self.filepath,
                     )
@@ -1283,6 +1303,8 @@ def build_enhanced_callbacks(
                 filepath=best_joint_path,
                 thresholds=joint_thresholds,
                 dme_floor=dme_floor,
+                prioritize_dr_accuracy=bool(config.get("joint_prioritize_dr_accuracy", False)),
+                dr_accuracy_epsilon=float(config.get("joint_dr_accuracy_epsilon", 1e-4)),
                 verbose=1,
             )
         )
