@@ -1,0 +1,114 @@
+# config_raw_push_v2.yaml
+# Safer variant of raw-push profile after observing early collapse and weak Stage2 recovery.
+# Use with latest codebase (joint DME+DR stratified split patch).
+
+seed: 42
+long_stage2_mode: true
+input_shape: [512, 512, 3]
+num_dme_classes: 3
+num_dr_classes: 5
+output_dir: pipeline_outputs
+checkpoint_dir: pipeline_outputs/checkpoints
+
+batch_size: 8
+val_split: 0.20
+augment_train: true
+use_advanced_loader: true
+
+dme_class_weight_clip_ratio: 7.0
+oversample_minority_enabled: true
+oversample_minority_class_id: 1
+oversample_factor: 2
+max_batches:
+  null
+
+medical_importance: true
+ordinal_penalty: true
+
+border_fraction: 0.10
+clip_limit: 2.0
+grid_size: 8
+
+stage1:
+  epochs: 45
+  learning_rate: 2.0e-5
+  early_stopping_patience: 15
+  lr_reduce_patience: 8
+  lr_reduce_factor: 0.5
+  min_lr: 1.0e-7
+  ordinal_loss_weighting: true
+  focal_loss_gamma: 2.0
+  dme_label_smoothing: 0.02
+  dme_soft_ordinal_weights: false
+  dr_loss_weight: 0.28
+  dr_class_weighting: true
+  dr_class_weight_clip_ratio: 6.0
+  warmup_epochs: 2
+
+stage2:
+  epochs: 24
+  learning_rate: 5.0e-7
+  early_stopping_patience: 10
+  lr_reduce_patience: 5
+  lr_reduce_factor: 0.5
+  min_lr: 1.0e-8
+  ordinal_loss_weighting: true
+  focal_loss_gamma: 2.0
+  dme_label_smoothing: 0.005
+  dme_soft_ordinal_weights: true
+  dr_loss_weight: 0.16
+  dr_class_weighting: true
+  dr_class_weight_clip_ratio: 5.5
+  warmup_epochs: 1
+  joint_checkpoint_enabled: true
+  stage2_freeze_aspp_bn: true
+  stage2_freeze_head_bn: true
+  stage2_checkpoint_use_stage1_baseline: true
+  collapse_guard_enabled: true
+  collapse_guard_ratio: 0.90
+  collapse_guard_min_abs_qwk: 0.62
+  collapse_guard_patience: 20
+  collapse_guard_hard_drop: 0.65
+  collapse_guard_start_epoch: 10
+  stage2_revert_if_worse: true
+  stage2_min_improvement: 0.0005
+
+model:
+  backbone: resnet50
+  backbone_weights: imagenet
+  backbone_weights_path: null
+  aspp_filters: 256
+  dr_head_units: 256
+  dme_head_units: 256
+  dme_head_residual: true
+  dropout_rate: 0.4
+
+joint_selection:
+  enabled: true
+  thresholds:
+    - [0.70, 0.80]
+    - [0.72, 0.78]
+    - [0.75, 0.75]
+    - [0.70, 0.75]
+    - [0.70, 0.72]
+    - [0.70, 0.70]
+    - [0.68, 0.70]
+  fallback_step: 0.02
+  min_threshold: 0.60
+  dme_floor: 0.70
+
+evaluation:
+  qwk_target: 0.80
+  output_visualisations: true
+  save_confusion_matrix: true
+  save_per_class_metrics: true
+  save_boundary_confusion: true
+  calibrate_dme_thresholds: true
+  calibrate_dr_thresholds: true
+  calibration_min_qwk_gain: 0.001
+  dr_calibration_max_accuracy_drop: 0.01
+
+ablation:
+  epochs_per_model: 5
+  n_bootstrap: 500
+  output_dir: ablation_results
