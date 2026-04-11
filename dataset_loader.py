@@ -328,40 +328,6 @@ def _build_tf_dataset(
     return ds
 
 
-def _pick_stratify_target(
-    dme_labels: np.ndarray,
-    dr_labels: np.ndarray,
-) -> Tuple[Optional[np.ndarray], str]:
-    """Pick the strongest feasible stratification target.
-
-    Preference order:
-    1) Full joint DME(3) x DR(5) labels
-    2) Joint DME(3) x DR-binned(3) labels
-    3) DME-only labels
-    4) Unstratified random split (last resort)
-    """
-
-    def _is_feasible(target: np.ndarray) -> bool:
-        _, counts = np.unique(target, return_counts=True)
-        if counts.size < 2:
-            return False
-        return int(np.min(counts)) >= 2
-
-    full_joint = dme_labels * NUM_DR_CLASSES + dr_labels
-    if _is_feasible(full_joint):
-        return full_joint, "joint_dme_dr5"
-
-    dr_bins = np.where(dr_labels >= 3, 2, np.where(dr_labels >= 1, 1, 0)).astype(int)
-    coarse_joint = dme_labels * 3 + dr_bins
-    if _is_feasible(coarse_joint):
-        return coarse_joint, "joint_dme_dr3"
-
-    if _is_feasible(dme_labels):
-        return dme_labels, "dme_only"
-
-    return None, "random"
-
-
 def build_datasets(
     csv_path: str,
     image_dir: str,
@@ -422,20 +388,8 @@ def build_datasets(
     dme_labels = df["dme_label"].values.astype(int)
     dr_labels = df["dr_label"].values.astype(int)
 
-    stratify_target, split_strategy = _pick_stratify_target(dme_labels, dr_labels)
-    if split_strategy != "joint_dme_dr5":
-        logger.warning(
-            "Using fallback split strategy '%s' (full DME+DR stratification unavailable).",
-            split_strategy,
-        )
-
     train_paths, val_paths, train_dme, val_dme, train_dr, val_dr = train_test_split(
-        paths,
-        dme_labels,
-        dr_labels,
-        test_size=val_split,
-        random_state=seed,
-        stratify=stratify_target,
+        paths, dme_labels, dr_labels, test_size=val_split, random_state=seed, stratify=dme_labels
     )
 
     logger.info(
@@ -445,16 +399,7 @@ def build_datasets(
     # Log class distribution
     train_dist = {c: int(np.sum(train_dme == c)) for c in range(NUM_DME_CLASSES)}
     val_dist = {c: int(np.sum(val_dme == c)) for c in range(NUM_DME_CLASSES)}
-    train_dr_dist = {c: int(np.sum(train_dr == c)) for c in range(NUM_DR_CLASSES)}
-    val_dr_dist = {c: int(np.sum(val_dr == c)) for c in range(NUM_DR_CLASSES)}
-    logger.info(
-        "Split strategy='%s' | DME train=%s val=%s | DR train=%s val=%s",
-        split_strategy,
-        train_dist,
-        val_dist,
-        train_dr_dist,
-        val_dr_dist,
-    )
+    logger.info("Train distribution: %s | Val distribution: %s", train_dist, val_dist)
 
     class_weights = compute_dme_class_weights(train_dme)
 

@@ -395,33 +395,6 @@ def oversample_minority_class(paths, dme_labels, dr_labels, minority_class=1, fa
     )
 
 
-def _pick_stratify_target(
-    dme_labels: np.ndarray,
-    dr_labels: np.ndarray,
-) -> Tuple[Optional[np.ndarray], str]:
-    """Pick the strongest feasible stratification target for train/val split."""
-
-    def _is_feasible(target: np.ndarray) -> bool:
-        _, counts = np.unique(target, return_counts=True)
-        if counts.size < 2:
-            return False
-        return int(np.min(counts)) >= 2
-
-    full_joint = dme_labels * NUM_DR_CLASSES + dr_labels
-    if _is_feasible(full_joint):
-        return full_joint, "joint_dme_dr5"
-
-    dr_bins = np.where(dr_labels >= 3, 2, np.where(dr_labels >= 1, 1, 0)).astype(int)
-    coarse_joint = dme_labels * 3 + dr_bins
-    if _is_feasible(coarse_joint):
-        return coarse_joint, "joint_dme_dr3"
-
-    if _is_feasible(dme_labels):
-        return dme_labels, "dme_only"
-
-    return None, "random"
-
-
 def build_datasets_advanced(
     csv_path: str,
     image_dir: str,
@@ -512,22 +485,17 @@ def build_datasets_advanced(
     dme_labels = df["dme_label"].values.astype(int)
     dr_labels = df["dr_label"].values.astype(int)
 
-    stratify_target, split_strategy = _pick_stratify_target(dme_labels, dr_labels)
-    if split_strategy != "joint_dme_dr5":
-        logger.warning(
-            "Using fallback split strategy '%s' (full DME+DR stratification unavailable).",
-            split_strategy,
-        )
-
-    train_paths, val_paths, train_dme, val_dme, train_dr, val_dr = train_test_split(
-        paths,
-        dme_labels,
-        dr_labels,
-        test_size=val_split,
-        random_state=seed,
-        stratify=stratify_target,
+    # QWK-aware stratified split (stratify on DME labels)
+    train_paths, val_paths, train_dme, val_dme = ordinal_stratified_split(
+        paths, dme_labels, val_split=val_split, seed=seed, num_classes=NUM_DME_CLASSES,
     )
-    _check_ordinal_consistency(train_dme, val_dme, NUM_DME_CLASSES)
+
+    # Apply the same split to DR labels using path-index mapping
+    path_to_idx = {p: i for i, p in enumerate(paths)}
+    train_indices = np.array([path_to_idx[p] for p in train_paths])
+    val_indices = np.array([path_to_idx[p] for p in val_paths])
+    train_dr = dr_labels[train_indices]
+    val_dr = dr_labels[val_indices]
 
     oversample_factor = max(1, int(oversample_factor))
     oversample_minority_class_id = int(oversample_minority_class_id)
@@ -553,27 +521,6 @@ def build_datasets_advanced(
             before_counts,
             after_counts,
         )
-
-    train_dme_dist = {
-        i: int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)
-    }
-    val_dme_dist = {
-        i: int(np.sum(val_dme == i)) for i in range(NUM_DME_CLASSES)
-    }
-    train_dr_dist = {
-        i: int(np.sum(train_dr == i)) for i in range(NUM_DR_CLASSES)
-    }
-    val_dr_dist = {
-        i: int(np.sum(val_dr == i)) for i in range(NUM_DR_CLASSES)
-    }
-    logger.info(
-        "Split strategy='%s' | DME train=%s val=%s | DR train=%s val=%s",
-        split_strategy,
-        train_dme_dist,
-        val_dme_dist,
-        train_dr_dist,
-        val_dr_dist,
-    )
 
     # Ordinal class weights (based on effective training labels)
     class_weights = compute_ordinal_class_weights(
@@ -606,21 +553,12 @@ def build_datasets_advanced(
         "total_samples": int(len(paths)),
         "train_samples": int(len(train_paths)),
         "val_samples": int(len(val_paths)),
-        "split_strategy": split_strategy,
         "class_distribution": {
             "train": {
                 str(i): int(np.sum(train_dme == i)) for i in range(NUM_DME_CLASSES)
             },
             "val": {
                 str(i): int(np.sum(val_dme == i)) for i in range(NUM_DME_CLASSES)
-            },
-        },
-        "dr_distribution": {
-            "train": {
-                str(i): int(np.sum(train_dr == i)) for i in range(NUM_DR_CLASSES)
-            },
-            "val": {
-                str(i): int(np.sum(val_dr == i)) for i in range(NUM_DR_CLASSES)
             },
         },
         "class_weights": {str(k): round(v, 4) for k, v in class_weights.items()},
