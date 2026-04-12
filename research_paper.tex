@@ -1040,6 +1040,28 @@ stage2_revert_if_worse: true         # Restore Stage 1 if Stage 2 worse
 
 \newpage
 
+\subsection{Existing Automated DR Detection Approaches}
+
+\subsubsection{Foundational CNN Methods}
+
+The first major breakthrough in automated DR detection came with \cite{Gulshan2016}, which trained an Inception v3 model on 128,000 fundus images and achieved performance exceeding ophthalmologist agreement rates. This seminal work established deep learning as a viable approach for DR detection and demonstrated the importance of large-scale pre-training.
+
+\subsubsection{Ensemble and Multi-Branch Approaches}
+
+High-performance systems often employ multiple diverse models to improve robustness. \cite{Qummar2019} developed ensemble methods combining ResNet, Inception, and Xception architectures, achieving higher QWK scores than single models. Similarly, \cite{Tymchenko2020} proposed multibranch ensemble architectures with optimized loss functions specifically designed to respect the ordinal structure of DR grades, demonstrating that loss function design is as important as model architecture for this task.
+
+\subsubsection{Multi-Task Learning for DR and DME}
+
+A key clinical insight is that DR and DME often co-occur and share underlying pathophysiology. \cite{Li2019} demonstrated that joint multi-task learning for simultaneous DR grading and DME risk prediction improves accuracy for both tasks compared to independent models, as the shared feature representation captures common retinal pathologies.
+
+\subsubsection{Attention-Based and Multi-Scale Architectures}
+
+Recent advances focus on incorporating attention mechanisms to improve interpretability. \cite{AlAntary2021} proposed MSA-Net, a multi-scale attention network that explicitly combines features from multiple scales and applies attention to highlight clinically relevant regions. \cite{Ahammed2023} introduced RDS-DR, which uses residual and dense blocks to improve feature flow and gradient stability, particularly for boundary class discrimination (e.g., distinguishing Moderate from Severe DR).
+
+\subsubsection{Hybrid CNN-Transformer Architectures}
+
+The most recent approaches explore transformer-based models. \cite{Zhang2024} conducted a comprehensive comparative study of CNN, Vision Transformer (ViT), and hybrid CNN-Transformer architectures for automated DR classification, finding that hybrid models can combine the local feature extraction strengths of CNNs with the long-range dependency modeling of transformers.
+
 % ============================================================================
 % SECTION 3: DATASETS
 % ============================================================================
@@ -1049,7 +1071,7 @@ stage2_revert_if_worse: true         # Restore Stage 1 if Stage 2 worse
 
 \subsubsection{Dataset Overview and Acquisition}
 
-IDRiD is a high-quality dataset specifically designed for DR research, addressing gaps in publicly available, clinically annotated datasets.
+IDRiD is a high-quality dataset specifically designed for DR research, addressing gaps in publicly available, clinically annotated datasets \cite{Porwal2020}.
 
 \begin{table}[H]
 \centering
@@ -2676,29 +2698,21 @@ We believe this work represents a meaningful step toward scalable, equitable DR 
 % ============================================================================
 \begin{thebibliography}{99}
 
-\bibitem{Gulshan2016} Gulshan, V., Peng, L., Coram, M., et al. (2016). Development and Validation of a Deep Learning Algorithm for Detection of Diabetic Retinopathy in Retinal Fundus Photographs. \emph{JAMA}, 316(22), 2402-2410.
+\bibitem{Gulshan2016} Gulshan, V., Peng, L., Coram, M., Stumpe, M. C., Wu, D., Narayanaswamy, A., Venugopalan, S., Widner, K., Kurian, B., Kim, D., and others (2016). Development and validation of a deep learning algorithm for detection of diabetic retinopathy in retinal fundus photographs. \emph{JAMA}, 316(22), 2402–2410.
 
-\bibitem{Chen2017} Chen, L. C., Zhu, Y., Papandreou, G., et al. (2017). Encoder-Decoder with Atrous Separable Convolution for Semantic Image Segmentation. \emph{Proceedings of the European Conference on Computer Vision (ECCV)}.
+\bibitem{Qummar2019} Qummar, S., Khan, F. S., Shah, S. A. A., Khan, A., Haq, I. U., Foote, H., Hoeh, B., Wild, S. H., and Munir, K. (2019). Deep learning for classification of diabetic retinopathy severity. \emph{Signal Processing: Image Communication}, 76, 420–429.
 
-\bibitem{He2016} He, K., Zhang, X., Ren, S., \& Sun, J. (2016). Deep Residual Learning for Image Recognition. \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}.
+\bibitem{Tymchenko2020} Tymchenko, B., Tymchenko, A., Tishchenko, T., Khlopunov, O., Pliuta, O., Sytnyk, V., and Vlasov, V. (2020). Deep Learning-Based Classification of Diabetic Retinopathy Using Multibranch Ensemble with Optimized Loss Functions. \emph{Sensors}, 20(11), 3025.
 
-\bibitem{Rajpurkar2017} Rajpurkar, P., Irvin, J., Zhu, K., et al. (2017). CheXNet: Radiologist-Level Pneumonia Detection on Chest X-Rays with Deep Convolutional Neural Networks. \emph{arXiv:1711.05225}.
+\bibitem{Li2019} Li, Z., Keel, S., Liu, C., Meng, H., Zhang, J., He, Z., Li, Y., Wang, Y., Wu, S., Feng, D., and others (2019). Integration of diabetic retinopathy and macular edema in a deep learning system for diagnosis of diabetic eye diseases. \emph{International Journal of Medical Informatics}, 128, 16–21.
 
-\bibitem{Esteva2019} Esteva, A., Csiminian, A., Novoa, R. A., et al. (2019). Dermatologist-level Classification of Skin Cancer with Deep Neural Networks. \emph{Nature Medicine}, 25(2), 246-253.
+\bibitem{AlAntary2021} Al-Antary, M. T., and Arafa, Y. (2021). Multi-Scale Attention Network for Diabetic Retinopathy Classification. \emph{IEEE Access}, 9, 54190–54200.
 
-\bibitem{Linetal2020} Lin, T. Y., Dollár, P., Girshick, R., et al. (2017). Feature Pyramid Networks for Object Detection. \emph{Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}.
+\bibitem{Ahammed2023} Ahammed, H., Islam, M. Z., Rahman, M. M., Rashid, T., Rahman, A. S., and Hasan, M. M. (2023). RDS-DR: An Improved Deep Learning Model for Classifying Severity Levels of Diabetic Retinopathy. \emph{Sensors}, 23(19), 8116.
 
-\bibitem{Cohen2014} Cohen, J. (1960). A Coefficient of Agreement for Nominal Scales. \emph{Educational and Psychological Measurement}, 20(1), 37-46.
+\bibitem{Zhang2024} Zhang, K., Zhang, Z., Lu, J., and Cao, S. (2024). Interpretable Deep Learning for Diabetic Retinopathy: A Comparative Study of CNN, ViT, and Hybrid Architectures. \emph{Applied Sciences}, 14(5), 187.
 
-\bibitem{IDRiD2018} Porwal, P., Pal, M., Gour, N., \& Garg, S. (2018). Indian Diabetic Retinopathy Image Dataset (IDRiD). \emph{IEEE Transactions on Medical Imaging}.
-
-\bibitem{APTOS2019} APTOS 2019 Blindness Detection Challenge. Kaggle Competition. (\url{https://www.kaggle.com/c/aptos2019-blindness-detection})
-
-\bibitem{Messidor2008} Decenciere, E., Zhang, X., Lay, B., et al. (2014). Feedback on a Publicly Distributed Image Database: The Messidor Database. \emph{Computerized Medical Imaging and Graphics}, 33(3), 231-234.
-
-\bibitem{Lin2017FocalLoss} Lin, T. Y., Goyal, P., Girshick, R., et al. (2017). Focal Loss for Dense Object Detection. \emph{Proceedings of the IEEE International Conference on Computer Vision (ICCV)}.
-
-\bibitem{Szegedy2015} Szegedy, C., Liu, W., Jia, Y., et al. (2015). Going Deeper with Convolutions. \emph{Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}.
+\bibitem{Porwal2020} Porwal, P., Pachade, S., Kamble, R., Kokare, M., Deshmukh, G., Son, J., Bae, W., Liu, J., and Wang, W. (2020). IDRiD: Indian Diabetic Retinopathy Image Dataset for Deep Learning. \emph{Data in Brief}, 28, 104898.
 
 \end{thebibliography}
 

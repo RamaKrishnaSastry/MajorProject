@@ -1,0 +1,563 @@
+\documentclass[12pt,a4paper]{article}
+
+% ---------------- Packages ----------------
+\usepackage{graphicx}
+\usepackage{amsmath, amssymb}
+\usepackage{pdflscape}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{hyperref}
+\usepackage{cite}
+\geometry{margin=1in}
+
+\onehalfspacing
+
+% ---------------- Document Info ----------------
+% \title{}
+
+% \date{}
+
+
+% ---------------- Document Begins ----------------
+\begin{document}
+\pagenumbering{roman}
+\begin{abstract}
+Diabetic Retinopathy (DR) is one of the leading causes of preventable blindness worldwide, requiring early and accurate detection for effective clinical intervention. This project presents an advanced deep learning framework -  \textbf{DR-ASPP-DRN}, for automated multi-class classification of DR severity and prediction of Diabetic Macular Edema (DME) risk from retinal fundus images. The proposed model integrates a \textbf{Dilated Residual Network (DRN)} backbone with an \textbf{Atrous Spatial Pyramid Pooling (ASPP)} module to enhance effective receptive field, thereby capturing both fine-grained lesion details and broad pathological context. A \textbf{multi-task learning strategy} is used to jointly predict DR grade and DME risk, optimizing a combined loss function based on Mean Squared Error and Cross-Entropy. The system is primarily trained and evaluated on Indian Diabetic Retinopathy Image Dataset (IDRiD), with additional validation using EyePACS, APTOS 2019, and Messidor datasets to ensure generalization. The model aims to achieve a high Quadratic Weighted Kappa (QWK) score and superior interpretability compared to standard CNN baselines. Experimental results are expected to demonstrate that receptive field augmentation (RFA) substantially improve lesion localization and grading accuracy, offering a clinically reliable and computationally efficient solution for real-world DR screening applications.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+% =================================================
+\pagenumbering{arabic}
+\section{Introduction}
+
+\subsection{Problem and Significance}
+Diabetic Retinopathy (DR) is one of the most severe microvascular complications of diabetes and continues to be a leading cause of preventable blindness globally. The disease progressively damages the retinal blood vessels, causing visual impairment if not detected and diagnosed early. Timely and accurate identification of DR is hence important for clinical management and prevention of irreversible vision loss.
+
+Conventionally, ophthalmologists assess DR severity manually by inspecting retinal fundus images for characteristic lesions such as microaneurysms, hemorrhages, and exudates. However, this process is time-consuming, subjective, and limited by inter-observer variability. With the rising prevalence of diabetes and limited access to trained specialists, automated DR screening systems have become essential to support large-scale clinical workflows and community screening programs.
+
+This project aims to develop an automated deep learning system capable of grading DR severity (Grade 0-4) from retinal fundus images. The system leverages convolutional architectures enhanced by \textbf{Receptive Field Augmentation (RFA)} to capture both fine and coarse retinal features critical for multi-scale lesion analysis. The specific objectives of this work are:
+\begin{itemize}
+    \item \textbf{Primary Goal (DR Grading):} Automatically classify fundus images into five DR severity levels based on the International Clinical Diabetic Retinopathy (ICDR) Scale — No DR (0), Mild (1), Moderate (2), Severe (3), and Proliferative DR (4).
+    \item \textbf{Secondary Goal (DME Risk):} Jointly predict the associated Diabetic Macular Edema (DME) risk categorized as No, Possible, or Present.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\textwidth, keepaspectratio]{images/diabetic_retinopathy.png}
+\caption{Different stages of Diabetic Retinopathy}
+\label{fig:Disease}
+\end{figure}
+
+The project aims to improve the \textbf{Quadratic Weighted Kappa (QWK)} score by solving for the limitations of standard CNNs in balancing global context and local detail extraction, using RFA-based techniques.
+
+\subsection{Imaging Modality and Dataset Description}
+Retinal fundus photography is a non-invasive imaging modality that captures the posterior pole of the eye, including the macula, optic disc, and retinal vasculature. These images enable detailed visualization of pathological features such as:
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item \textbf{Microaneurysms} — early indicators of DR, appearing as small red dots.
+    \item \textbf{Hemorrhages} — larger dark lesions caused by ruptured blood vessels.
+    \item \textbf{Exudates} — bright yellow-white spots formed by lipid leakage.
+    \item \textbf{Cotton Wool Spots} — localized micro-infarcts of retinal nerve fibers.
+\end{itemize}
+
+
+The primary dataset used in this study is the \textbf{Indian Diabetic Retinopathy Image Dataset (IDRiD)}, developed for both DR and DME analysis. IDRiD contains 516 high-resolution color fundus images captured under standardized illumination and field-of-view conditions. Each image is annotated at two levels:
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item \textbf{Image-level Labels:} DR severity grades (0–4) and DME risk levels (0–2).
+    \item \textbf{Pixel-level Lesion Masks:} Manual annotations for microaneurysms, hemorrhages, soft and hard exudates, and the optic disc.
+\end{itemize}
+
+The IDRiD dataset serves as the standard for algorithm development in this area. Meanwhile, additional datasets like EyePACS, APTOS 2019, and Messidor are used for pre-training, cross-validation, and evaluation. Combining such multiple datasets ensures robustness, generalization, and improved performance across variations in camera type, illumination, and patient demographics\cite{Porwal2020}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{images/fundus_image.jpg}
+\caption{Color fundus photograph containing different retinal lesions associated with diabetic retinopathy. Enlarged parts illustrating presence of Microaneurysms, Soft Exudates, Hemorrhages and Hard Exudates.}
+\label{fig:fundus}
+\end{figure}
+
+
+\newpage
+
+% =================================================
+
+\section{Existing Models and Identified Gaps}
+\subsection{State-of-the-Art Approaches}
+Deep learning methods have revolutionized DR detection and grading, with the best-performing models typically falling into specific categories that define the current state-of-the-art.
+
+\begin{enumerate}
+    \item \textbf{Standard CNN Architectures} \cite{Gulshan2016}:
+    \begin{itemize}[noitemsep, topsep=0pt]
+        \item \textbf{Approach:} Models like \textit{Inception-v3} were trained on large datasets (e.g., 128,000 fundus images) to classify DR severity levels.
+        \item \textbf{Gap:} These foundational models focused mainly on binary classification (Referable vs.\ Non-Referable DR) and function as a “black box,” lacking the \textbf{multi-scale feature integration} needed for fine-grained severity grading.
+    \end{itemize}
+    
+    \item \textbf{Ensemble and Fusion Models} \cite{Qummar2019}:
+    \begin{itemize}[noitemsep, topsep=0pt]
+        \item \textbf{Approach:} High QWK scores were achieved by averaging the predictions of an ensemble of diverse CNN backbones such as ResNet, Inception, and Xception.
+        \item \textbf{Gap:} Although accurate, this approach introduces \textbf{excessive computational complexity} and high parameter counts, making deployment \textbf{impractical in clinical settings} with limited computational resources.
+    \end{itemize}
+    
+    \item \textbf{Multi-Task Learning (DR and DME)} \cite{Li2019}:
+    \begin{itemize}[noitemsep, topsep=0pt]
+        \item \textbf{Approach:} These models jointly predict both DR severity and Diabetic Macular Edema (DME), leveraging the correlation between the two conditions for richer feature learning.
+        \item \textbf{Gap:} Despite this improvement, many models retain conventional CNN baseline that \textbf{fail to address the multi-scale feature dilemma}. Performance gains are primarily due to multi-task loss design rather than improved receptive field modeling.
+    \end{itemize}
+    
+    \item \textbf{Attention-Based and Multi-Scale Networks} \cite{AlAntary2021}:
+    \begin{itemize}[noitemsep, topsep=0pt]
+        \item \textbf{Approach:} Encoder-decoder models like \textit{MSA-Net} integrate attention blocks to highlight lesion regions and combine features at multiple semantic levels.
+        \item \textbf{Gap:} While attention helps localize relevant areas, repeated downsampling in the backbone leads to \textbf{loss of high-resolution details}, limiting the ability to detect tiny yet critical lesions.
+    \end{itemize}
+    \newpage
+    \item \textbf{Specialized Feature Blocks} \cite{Ahammed2023}:
+    \begin{itemize}[noitemsep, topsep=0pt]
+        \item \textbf{Approach:} Architectures such as \textit{RDS-DR} employ residual and dense blocks with transition layers to improve feature reuse and gradient stability.
+        \item \textbf{Gap:} While effective in stabilizing training, these networks \textbf{lack explicit Receptive Field Augmentation (RFA)} mechanisms and rely heavily on traditional pooling, which still sacrifices local detail for global context.
+    \end{itemize}
+
+    \item \textbf{Hybrid CNN-Transformer Architectures} \cite{Zhang2024}:
+    \begin{itemize}[noitemsep, topsep=0pt]
+        \item \textbf{Approach:} Recent hybrid architectures combine CNN layers for localized feature extraction with Vision Transformers (ViTs) for capturing long-range contextual dependencies.
+        \item \textbf{Gap:} ViT-based models generally demand \textbf{very large datasets} to converge effectively, and their complexity can lead to \textbf{overfitting or underfitting} when trained on limited medical datasets such as IDRiD.
+    \end{itemize}
+    
+    \item \textbf{Benchmark Performance (QWK 0.85–0.93)} \cite{Tymchenko2020}:
+    \begin{itemize}[noitemsep, topsep=0pt]
+        \item \textbf{Observation:} State-of-the-art systems achieve QWK scores in the 0.85–0.93 range but rely on heavy ensembling, test-time augmentation, or specialized loss functions to optimize ordinal consistency.
+    \end{itemize}
+\end{enumerate}
+
+\begin{table}[H]
+\centering
+\caption{Summary of Key Related Works on Diabetic Retinopathy Grading}
+\renewcommand{\arraystretch}{1.4}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{p{3cm} p{4cm} p{4cm} p{4cm}}
+\toprule
+\textbf{Paper / Year} & \textbf{Core Model Type} & \textbf{Primary Strategy} & \textbf{Multi-Scale Mechanism} \\ 
+\midrule
+
+\textbf{Gulshan (2016)} &
+Standard CNN (\textit{Inception-v3}) &
+Foundational classification using large-scale data for DR severity prediction. &
+Standard CNN pooling and striding; no explicit multi-scale integration. \\
+
+\textbf{Qummar (2019)} &
+Ensemble of CNNs &
+Averaging predictions from multiple CNN architectures (\textit{ResNet}, \textit{Inception}, \textit{Xception}). &
+Implicit fusion through ensembling; no dedicated multi-scale mechanism. \\
+
+\textbf{Li (2019)} &
+Standard CNN (\textit{ResNet-50}) &
+Multi-task learning for simultaneous DR and DME prediction. &
+Relies on standard CNN feature hierarchy; lacks explicit multi-scale feature modeling. \\
+
+\textbf{Tymchenko (2020)} &
+Ensemble of CNNs &
+Optimized loss function and multi-branch ensemble for robust DR classification. &
+Ensemble improves performance but does not structurally expand receptive fields. \\
+
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.4}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{p{3cm} p{4cm} p{4cm} p{4cm}}
+\toprule
+\textbf{Paper / Year} & \textbf{Core Model Type} & \textbf{Primary Strategy} & \textbf{Multi-Scale Mechanism} \\ 
+\midrule
+
+
+\textbf{Al-Antary (2021)} &
+Attention-Based Network (\textit{MSA-Net}) &
+Attention-based feature fusion and localization of critical lesion regions. &
+Employs attention to focus on lesions; indirect multi-scale fusion. \\
+
+\textbf{Ahammed (2023)} &
+Customized CNN (\textit{RDS-DR}) &
+Residual and dense blocks for improved feature flow and gradient stability. &
+Improves representation flow but uses standard CNN pooling and striding. \\
+
+\textbf{Zhang (2024)} &
+Hybrid CNN–Transformer &
+Combines CNN layers for local feature extraction with ViT for global context modeling. &
+Uses transformer attention for global feature learning; requires large datasets. \\
+
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+
+\subsection{Identified Technical Gaps}
+Although existing models achieve strong performance in automated Diabetic Retinopathy (DR) grading, they still exhibit certain fundamental limitations that restrict their clinical reliability and accuracy. Two major gaps have been identified, particularly in the context of multi-scale feature representation and performance consistency across disease grades.
+
+\subsubsection{Gap 1: The Multi-Scale Receptive Field Dilemma}
+The diagnosis of DR depends on identifying features that appear at vastly different spatial scales within the retina:
+\begin{itemize}
+    \item \textbf{Microscopic Lesions:} Tiny structures such as microaneurysms and fine hemorrhages, which are crucial for detecting early stages (Mild DR), require a small, localized receptive field to preserve spatial detail.
+    \item \textbf{Macroscopic Context:} Larger patterns such as venous beading, widespread hemorrhages, and ischemic regions require a broader, global receptive field to capture overall disease distribution.
+\end{itemize}
+
+Conventional CNN architectures expand their receptive fields primarily through strides and pooling operations. While this increases global context, it simultaneously reduces the spatial resolution of feature maps. As a result, standard CNNs face an inherent trade-off—either losing the fine detail necessary for early lesion detection or failing to gather enough global context for accurate grading at severe stages.
+
+\subsubsection{Gap 2: Sub-Optimal QWK in Critical Grades}
+Even high-performing models tend to struggle when distinguishing between adjacent DR grades (for example, Moderate vs.\ Severe). These boundary misclassifications significantly reduce the Quadratic Weighted Kappa (QWK) score, a key clinical metric. The core reason for this limitation is the model’s inability to consistently integrate and balance both local (microscopic) and global (macroscopic) pathological cues during inference.
+
+
+
+\subsection{Motivation for a New Model}
+To overcome these limitations, this project proposes the \textbf{DR-ASPP-DRN} model—an architecture explicitly designed to address the multi-scale feature learning challenge. The model employs a Dilated Residual Network (DRN) backbone to expand the receptive field without compromising spatial resolution and integrates an Atrous Spatial Pyramid Pooling (ASPP) module to combine features across multiple receptive field sizes. This approach enables the model to effectively fuse fine-grained lesion details with large-scale contextual information, directly improving grading accuracy and the clinically significant QWK metric.
+
+% % =================================================
+
+\section{Datasets}
+
+\subsection{Primary Dataset: IDRiD}
+The primary dataset used in this project is the \textbf{Indian Diabetic Retinopathy Image Dataset (IDRiD)}.  
+It comprises 516 color fundus images collected from Indian patients and includes the following detailed annotations:
+\begin{itemize}
+    \item \textbf{DR Severity Grade (0–4):} Categorized according to the International Clinical Diabetic Retinopathy (ICDR) scale.
+    \item \textbf{DME Risk (0–2):} Classified as No, Possible, or Present.
+    \item \textbf{Pixel-level Lesion Segmentation:} Ground-truth maps marking microaneurysms, hemorrhages, and other retinal lesions.
+\end{itemize}
+
+The IDRiD dataset serves as the \textbf{primary benchmark} for both training and evaluation of the proposed DR-ASPP-DRN model. Its rich lesion-level annotations make it well-suited for evaluating how effectively the network captures both local and global pathological cues through Receptive Field Augmentation (RFA).
+
+\subsection{Need for Multiple Datasets}
+Although IDRiD is highly detailed and clinically rich, its relatively small size and limited demographic scope pose challenges for training deep learning models that generalize well.  
+To address these limitations, it is essential to incorporate additional datasets for the following reasons:
+
+\begin{enumerate}
+    \item \textbf{Avoiding Overfitting:} With only 516 images, models trained exclusively on IDRiD risk memorizing dataset-specific patterns rather than learning generalized retinal features. Larger datasets like EyePACS help mitigate this issue by providing more diverse examples during pre-training.
+    \item \textbf{Improving Generalization:} DR manifestations vary across imaging conditions, camera devices, and patient populations. Including datasets such as APTOS 2019 and Messidor exposes the model to this variability, improving cross-domain performance and robustness.
+    \item \textbf{Transfer Learning Benefits:} Pre-training on large datasets (e.g., EyePACS) allows the backbone network to learn generic retinal features. Fine-tuning on IDRiD then refines the model for lesion-specific and clinical-grade classification tasks.
+    \item \textbf{Comprehensive Validation:} Using multiple datasets ensures that the final model’s accuracy and QWK score are not limited to a single data source. Validation on external datasets provides stronger evidence of real-world applicability.
+\end{enumerate}
+
+\subsection{Secondary Datasets}
+To support pre-training, transfer learning, and cross-dataset validation, several additional publicly available datasets are used. These datasets are selected based on their image diversity, annotation detail, and relevance to DR grading.
+
+\begin{table}[H]
+\centering
+\caption{Summary of Publicly Available Diabetic Retinopathy Datasets}
+\small
+\begin{tabular}{@{}lp{2cm}p{5.2cm}p{4.2cm}@{}}
+\toprule
+\textbf{Dataset} & \textbf{Images} & \textbf{Key Features} & \textbf{Usage in Project} \\ \midrule
+\textbf{IDRiD} & 516 & DR Grade (0–4), DME Risk (0–2), Pixel-level Lesion Maps & Primary Training and Testing \\
+\textbf{EyePACS (Kaggle)} & $\approx$35,000 & Large, diverse dataset; DR Grades (0–4) & Pre-training of ResNet-50 backbone \\
+\textbf{APTOS 2019} & $\approx$3,600 & High-quality fundus images with DR grading (0–4) & Validation and Fine-tuning \\
+\textbf{Messidor-1/2} & $\approx$2,400 & DR Grades (0–3), Tele-ophthalmology Screening Data & Benchmarking and Comparative Analysis \\
+\textbf{DDR} & $\approx$14,000 & DR Grades with Lesion Localization (Bounding Boxes) & Attention Map Validation and Testing RFA Effectiveness \\ \bottomrule
+\end{tabular}
+\end{table}
+
+
+In summary, while IDRiD provides precise clinical annotations essential for lesion-level learning, the inclusion of large and diverse datasets such as EyePACS, APTOS, and Messidor ensures that the proposed \textbf{DR-ASPP-DRN} model is not only accurate but also robust, transferable, and clinically reliable across heterogeneous data sources.
+
+
+% =================================================
+
+\section{Proposed Methodology}
+
+\subsection{Overview of the DR-ASPP-DRN Model}
+Deep learning-based DR grading models have shown remarkable progress, yet most existing architectures struggle to capture both the microscopic and macroscopic retinal features simultaneously.  
+Conventional CNNs extract localized patterns effectively but often lose global contextual understanding due to aggressive pooling and striding, while large-kernel or attention-based models capture broader patterns but miss subtle lesion-level details.  
+
+To overcome these limitations, this work introduces \textbf{Receptive Field Augmentation (RFA)} within a unified deep network architecture named \textbf{DR-ASPP-DRN}.  
+The proposed model combines a \textbf{Dilated Residual Network (DRN)} backbone for high-resolution feature extraction and an \textbf{Atrous Spatial Pyramid Pooling (ASPP)} module for multi-scale contextual fusion.  
+The overall framework performs joint prediction of:
+\begin{itemize}
+    \item \textbf{DR severity:} classified into five grades (0–4) following the International Clinical DR Scale
+    \item \textbf{DME risk:} categorized as No, Possible, or Present.
+\end{itemize}
+
+The model is designed using a \textbf{multi-task learning} strategy that allows both tasks to share a common feature representation, thereby improving generalization, clinical interpretability, and robustness against subtle variations in retinal appearance.
+
+\subsection{Receptive Field Augmentation (RFA)}
+
+\subsubsection{Concept and Motivation}
+In a Convolutional Neural Network (CNN), the \textit{receptive field} (RF) of a neuron defines the region of the input image that influences its activation.  
+Deeper layers naturally have larger receptive fields, which help capture global information.  
+However, conventional CNNs expand the receptive field mainly through pooling and strides—operations that reduce spatial resolution and blur lesion-level details.  
+This trade-off is particularly problematic in Diabetic Retinopathy (DR) grading, where accurate diagnosis depends on simultaneously detecting:
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item \textbf{Microscopic features} (e.g., microaneurysms, small hemorrhages), and
+    \item \textbf{Macroscopic features} (e.g., vascular tortuosity, venous beading, large exudate clusters).
+\end{itemize}
+
+\textbf{Receptive Field Augmentation (RFA)} addresses this challenge by enlarging the effective receptive field without losing spatial resolution.  
+It allows the model to function like a “multi-focal lens,” capable of attending to both localized lesions and global structural patterns simultaneously.
+
+\subsubsection{RFA Implementation: DRN and ASPP}
+Two complementary strategies are adopted for RFA within the DR-ASPP-DRN architecture:
+
+\begin{enumerate}
+    \item \textbf{Dilated (Atrous) Convolutions:} These convolutions introduce controlled gaps within the kernel elements, increasing the receptive field without adding parameters or downsampling.  
+    In this work, dilation rates of 2 and 4 are applied in the final ResNet blocks, enabling high-resolution feature extraction from larger retinal regions.
+    \item \textbf{Atrous Spatial Pyramid Pooling (ASPP):} ASPP consists of multiple parallel $3\times3$ convolutions with different dilation rates (e.g., 6, 12, 18), combined with a $1\times1$ convolution and a global average pooling branch.  
+    The fused output aggregates multi-scale features—capturing both local lesion evidence and broader retinal context.
+\end{enumerate}
+
+Clinically, this mimics how ophthalmologists examine fundus images—by simultaneously focusing on small lesions and overall vascular health.  
+Thus, RFA is central to enabling the proposed model to achieve clinically meaningful DR grading.
+
+\subsection{Preprocessing and Data Augmentation}
+Since retinal images vary in resolution, illumination, and contrast, standardized preprocessing ensures consistent model performance.  
+The following pipeline is implemented:
+\begin{itemize}
+    \item \textbf{Image Resizing:} All images are resized to $1024 \times 1024$ pixels for uniform input dimensions.
+    \item \textbf{Contrast Enhancement:} The green channel, which provides the best vessel contrast, is enhanced using Contrast Limited Adaptive Histogram Equalization (CLAHE).  
+          This improves visibility of micro-lesions and subtle intensity variations.
+    \item \textbf{Data Augmentation:} Random rotation, flipping, translation, and brightness adjustments are applied to increase diversity and reduce overfitting.
+\end{itemize}
+
+\subsection{Model Architecture}
+
+\subsubsection{RFA Backbone: Dilated Residual Network (DRN)}
+The backbone of the proposed DR-ASPP-DRN model is a modified \textbf{ResNet-50}.  
+To preserve fine spatial details while capturing contextual cues:
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item Striding operations in the final convolutional stages are removed.
+    \item Dilation rates of 2 and 4 replace them, expanding the receptive field without increasing parameters.
+\end{itemize}
+This configuration maintains high-resolution activation maps while allowing the network to perceive larger lesion groupings and retinal zones.
+
+\subsubsection{RFA Head: Atrous Spatial Pyramid Pooling (ASPP)}
+The feature maps from the DRN backbone are fed into the ASPP module.  
+It applies parallel dilated convolutions with multiple receptive field sizes and merges their outputs:
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item Small receptive fields capture fine lesions (microaneurysms, small hemorrhages),
+    \item Large receptive fields capture global vascular structure and lesion distribution.
+\end{itemize}
+The resulting feature map, $F_{ASPP}$, integrates both local precision and global awareness, forming a robust representation for classification.
+
+
+\subsection{Multi-Task Learning and Loss Function}
+The final feature vector, obtained after Global Average Pooling (GAP) from $F_{ASPP}$, is passed into two task-specific heads:
+\begin{enumerate}
+    \item \textbf{DR Grading Head:} Performs 5-class ordinal regression using Mean Squared Error (MSE) loss to penalize large misclassification errors between severity grades.
+    \item \textbf{DME Risk Head:} Performs 3-class categorical classification using Categorical Cross-Entropy (CE) loss to estimate the probability distribution over the DME risk levels.
+\end{enumerate}
+
+The combined objective function is defined as:
+\begin{equation}
+\text{Loss}_{\text{total}} = \text{MSE}(y_{\text{DR}}, \hat{y}_{\text{DR}}) + \lambda \cdot \text{CE}(y_{\text{DME}}, \hat{y}_{\text{DME}})
+\end{equation}
+where $\lambda$ is a tunable parameter controlling the relative importance of the two tasks during optimization.
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=1.5\textwidth, keepaspectratio]{images/architecture.png}
+\caption{Schematic representation of the proposed DR-ASPP-DRN architecture integrating a Dilated Residual Network (DRN) backbone with an Atrous Spatial Pyramid Pooling (ASPP) head for Receptive Field Augmentation (RFA).}
+\label{fig:architecture}
+\end{figure}
+\end{landscape}
+
+In real-world clinical imaging scenarios, retinal fundus photographs often exhibit illumination artifacts such as overexposed or underexposed regions, specular reflections, and uneven contrast due to variations in imaging devices and acquisition conditions.  
+These factors introduce \textbf{noisy visual information} that can degrade model robustness.  
+To address this, future extensions of the framework can incorporate an additional \textbf{regularization or exposure-consistency loss} term that penalizes prediction instability in regions affected by excessive brightness or glare.  
+This enhancement would improve the model’s ability to generalize across heterogeneous datasets and varying imaging conditions.
+
+
+\subsection{Quadratic Weighted Kappa (QWK) as Evaluation Metric}
+Since DR grading is an \textit{ordinal classification problem} (with ordered severity levels), simple accuracy fails to reflect the clinical importance of near-miss predictions.  
+For instance, confusing “Moderate” with “Severe” DR is less serious than misclassifying it as “No DR.”  
+To capture this, we use the \textbf{Quadratic Weighted Kappa (QWK)} metric, which measures agreement between predicted and true grades while penalizing larger deviations more heavily.
+
+The formula is defined as:
+\begin{equation}
+\text{QWK} = 1 - \frac{\sum_{i,j} w_{ij} O_{ij}}{\sum_{i,j} w_{ij} E_{ij}}, \qquad
+w_{ij} = \frac{(i-j)^2}{(K-1)^2}
+\end{equation}
+where:
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item $O_{ij}$ — observed frequency matrix (actual vs. predicted grades),
+    \item $E_{ij}$ — expected frequency matrix under random agreement,
+    \item $K$ — number of DR classes (here, 5),
+    \item $w_{ij}$ — penalty weight that increases quadratically with grade difference.
+\end{itemize}
+
+QWK ranges from $-1$ (complete disagreement) to $1$ (perfect agreement).  
+Values above $0.8$ are generally considered excellent, representing strong alignment with ophthalmologist grading standards.  
+Optimizing for QWK thus ensures that the model’s misclassifications remain clinically tolerable and consistent with human-level performance.
+
+\subsection{Summary}
+By embedding Receptive Field Augmentation (RFA) directly into the model architecture through DRN and ASPP modules, and optimizing using multi-task learning with QWK-driven evaluation, the proposed DR-ASPP-DRN framework effectively bridges the gap between microscopic lesion recognition and global retinal context understanding—key to accurate and clinically meaningful DR assessment.
+
+% =================================================
+\section{Experimental Plan and Timeline}
+
+The implementation and evaluation of the proposed \textbf{DR-ASPP-DRN} model will be carried out over a three-month period, focusing on model development, optimization, and validation.  
+Since the preliminary components—such as literature review, dataset preparation, and theoretical groundwork—are already complete, this plan emphasizes the experimental workflow.  
+
+The project is structured into four sequential phases, ensuring systematic progress, reproducibility, and clear performance evaluation.
+
+\subsection{Phase 1: Baseline Setup}
+This phase establishes the foundation for model comparison and experimentation.
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item Configure the deep learning environment with GPU acceleration and load the IDRiD dataset.
+    \item Implement preprocessing, including image resizing, CLAHE enhancement, and augmentation.
+    \item Train \textbf{ResNet-50} model (without RFA) using categorical cross-entropy loss.
+    \item Record key metrics such as Accuracy and \textbf{Quadratic Weighted Kappa (QWK)} to define the baseline performance.
+\end{itemize}
+
+\subsection{Phase 2: RFA Architecture Implementation}
+This phase focuses on integrating \textbf{Receptive Field Augmentation (RFA)} into the model architecture.
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item Modify the baseline ResNet-50 to form a \textbf{Dilated Residual Network (DRN)} using dilation in deeper convolutional layers.
+    \item Implement the \textbf{Atrous Spatial Pyramid Pooling (ASPP)} module with multi-scale dilation rates for contextual feature extraction.
+    \item Add dual output heads for DR grading and DME classification.
+    \item Conduct preliminary runs to verify network stability and convergence of the multi-task loss function.
+\end{itemize}
+
+\subsection{Phase 3: Training and Optimization}
+This phase focuses on model training, hyperparameter tuning, and loss optimization.
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item Train the complete \textbf{DR-ASPP-DRN} model using the combined MSE and Cross-Entropy loss function.
+    \item Tune parameters such as learning rate, batch size, optimizer type, and weighting factor $\lambda$.
+    \item Experiment with different dilation rates within the ASPP module to enhance multi-scale feature learning.
+    \item Monitor validation performance through QWK, accuracy, and convergence behavior.
+\end{itemize}
+
+\subsection{Phase 4: Evaluation and Reporting}
+This final phase focuses on comprehensive testing, comparative analysis, and documentation.
+\begin{itemize}[noitemsep, topsep=0pt]
+    \item Evaluate the trained model on the unseen IDRiD test set using QWK, Accuracy, Sensitivity, and Specificity.
+    \item Compare results with the baseline and reported state-of-the-art models.
+    \item Perform detailed \textbf{error analysis} to interpret misclassifications between DR grades.
+    \item Summarize all findings, visualizations, and discussions in the final report and presentation materials.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{images/gantt_chart.png}
+\caption{Planned Gantt chart illustrating the experimental workflow and timeline for each phase.}
+\label{fig:gantt}
+\end{figure}
+
+% =================================================
+\section{Expected Outcomes and Future Work}
+
+\subsection{Expected Outcomes}
+The proposed \textbf{DR-ASPP-DRN} architecture is expected to deliver superior performance compared to conventional Convolutional Neural Network (CNN) baselines such as ResNet-50 and EfficientNet.  
+By integrating Receptive Field Augmentation (RFA) through the combined use of a Dilated Residual Network (DRN) backbone and an Atrous Spatial Pyramid Pooling (ASPP) head, the model is anticipated to:
+\begin{itemize}
+    \item Achieve a higher \textbf{Quadratic Weighted Kappa (QWK)} score by accurately distinguishing between adjacent DR severity grades (e.g., Moderate vs.\ Severe).
+    \item Maintain fine-grained lesion detection capability while incorporating broad contextual understanding of retinal pathology.
+    \item Demonstrate improved \textbf{multi-task learning performance}, jointly predicting both DR grade and DME risk with high precision.
+    \item Provide enhanced \textbf{clinical interpretability}, as the model will capture both local and global pathological features relevant to ophthalmological diagnosis.
+\end{itemize}
+
+Overall, the DR-ASPP-DRN framework is expected to significantly reduce the trade-off between spatial resolution and contextual awareness that limits traditional CNNs, resulting in more reliable, clinically meaningful predictions.
+
+\subsection{Future Work}
+Building on the outcomes of this project, several directions can be explored to further enhance model performance and clinical applicability:
+\begin{itemize}
+    \item \textbf{Integration of Vision Transformers (ViTs):} Incorporating self-attention mechanisms from transformer architectures can enhance the model’s ability to capture long-range dependencies and global retinal context.
+    \item \textbf{Explainability and Visualization:} Employ techniques such as Gradient-weighted Class Activation Mapping (Grad-CAM) or attention heatmaps to visualize lesion importance regions, aiding interpretability and clinician trust.
+    \item \textbf{Cross-Dataset Generalization:} Extend model validation to other large-scale datasets like EyePACS and APTOS to confirm robustness across varying image qualities and demographics.
+    \item \textbf{Multi-Modal Learning:} Combine fundus imaging with additional diagnostic information (e.g., OCT scans or patient metadata) to build a comprehensive predictive model for diabetic eye disease progression.
+\end{itemize}
+
+In summary, the proposed model lays a strong foundation for advanced automated DR grading systems that are both diagnostically accurate and clinically interpretable, with promising potential for deployment in real-world ophthalmic screening programs.
+
+
+% =================================================
+% \section{References}
+% \begin{enumerate}[leftmargin=*, label={[\arabic*]}]
+% % \item Porwal, P., Pachade, S., Kamble, R., Kokare, M., Deshmukh, G., Son, J., Bae, W., Liu, J., and Wang, W. (2020). \textit{IDRiD: Indian Diabetic Retinopathy Image Dataset for Deep Learning}. Data in Brief, 28, 104898.
+
+% % \item Chen, L.C., Papandreou, G., Schroff, F., and Adam, H. (2017). \textit{Rethinking Atrous Convolution for Semantic Image Segmentation}. arXiv preprint arXiv:1706.05587.
+
+% % \item Yu, F., and Koltun, V. (2016). \textit{Multi-Scale Context Aggregation by Dilated Convolutions}. arXiv preprint arXiv:1511.07122.
+
+% % \item Zuiderveld, K. (1994). \textit{Contrast Limited Adaptive Histogram Equalization}. In Graphics Gems IV, Academic Press Professional, Inc., 474–485.
+
+% % \item Lam, C., Yu, C., Huang, L., and Rubin, D. (2018). \textit{Retinal Lesion Detection with Deep Learning Using Large-Scale Data}. Investigative Ophthalmology \& Visual Science, 59(9), 590–596.
+
+% % \item Pratt, H., Coenen, F., Broadbent, D.M., Harding, S.P., and Zheng, Y. (2016). \textit{Convolutional Neural Networks for Diabetic Retinopathy}. Procedia Computer Science, 90, 200–205.
+
+% % \item Gulshan, V., Peng, L., Coram, M., Stumpe, M. C., Wu, D., Narayanaswamy, A., Venugopalan, S., Widner, K., Kurian, B., Kim, D., and others (2016). \textit{Development and validation of a deep learning algorithm for detection of diabetic retinopathy in retinal fundus photographs}. JAMA, 316(22), 2402–2410.
+
+% % \item Qummar, S., Khan, F. S., Shah, S. A. A., Khan, A., Haq, I. U., Foote, H., Hoeh, B., Wild, S. H., and Munir, K. (2019). \textit{Deep learning for classification of diabetic retinopathy severity}. Signal Processing: Image Communication, 76, 420–429.
+
+% % \item Li, Z., Keel, S., Liu, C., Meng, H., Zhang, J., He, Z., Li, Y., Wang, Y., Wu, S., Feng, D., and others (2019). \textit{Integration of diabetic retinopathy and macular edema in a deep learning system for diagnosis of diabetic eye diseases}. International Journal of Medical Informatics, 128, 16–21.
+
+% % \item Tymchenko, B., Tymchenko, A., Tishchenko, T., Khlopunov, O., Pliuta, O., Sytnyk, V., and Vlasov, V. (2020). \textit{Deep Learning-Based Classification of Diabetic Retinopathy Using Multibranch Ensemble with Optimized Loss Functions}. Sensors, 20(11), 3025.
+
+% % \item Al-Antary, M. T., and Arafa, Y. (2021). \textit{Multi-Scale Attention Network for Diabetic Retinopathy Classification}. IEEE Access, 9, 54190–54200.
+
+% % \item Ahammed, H., Islam, M. Z., Rahman, M. M., Rashid, T., Rahman, A. S., and Hasan, M. M. (2023). \textit{RDS-DR: An Improved Deep Learning Model for Classifying Severity Levels of Diabetic Retinopathy}. Sensors, 23(19), 8116.
+
+% % \item Zhang, K., Zhang, Z., Lu, J., and Cao, S. (2024). \textit{Interpretable Deep Learning for Diabetic Retinopathy: A Comparative Study of CNN, ViT, and Hybrid Architectures}. MDPI Applied Sciences, 14(5), 187.
+% \end{enumerate}
+
+% \begin{enumerate}[leftmargin=*, label={[\arabic*]}]
+% \item ... % existing ones
+
+% \bibitem{Gulshan2016} Gulshan, V., Peng, L., Coram, M., Stumpe, M. C., Wu, D., Narayanaswamy, A., Venugopalan, S., Widner, K., Kurian, B., Kim, D., et al. (2016). \textit{Development and validation of a deep learning algorithm for detection of diabetic retinopathy in retinal fundus photographs}. JAMA, 316(22), 2402–2410.
+
+% \bibitem{Qummar2019} Qummar, S., Khan, F. S., Shah, S. A. A., Khan, A., Haq, I. U., Foote, H., Hoeh, B., Wild, S. H., and Munir, K. (2019). \textit{Deep learning for classification of diabetic retinopathy severity}. Signal Processing: Image Communication, 76, 420–429.
+
+% \bibitem{Li2019} Li, Z., Keel, S., Liu, C., Meng, H., Zhang, J., He, Z., Li, Y., Wang, Y., Wu, S., Feng, D., et al. (2019). \textit{Integration of diabetic retinopathy and macular edema in a deep learning system for diagnosis of diabetic eye diseases}. International Journal of Medical Informatics, 128, 16–21.
+
+% \bibitem{AlAntary2021} Al-Antary, M. T., and Arafa, Y. (2021). \textit{Multi-Scale Attention Network for Diabetic Retinopathy Classification}. IEEE Access, 9, 54190–54200.
+
+% \bibitem{Ahammed2023} Ahammed, H., Islam, M. Z., Rahman, M. M., Rashid, T., Rahman, A. S., and Hasan, M. M. (2023). \textit{RDS-DR: An Improved Deep Learning Model for Classifying Severity Levels of Diabetic Retinopathy}. Sensors, 23(19), 8116.
+
+% \bibitem{Zhang2024} Zhang, K., Zhang, Z., Lu, J., and Cao, S. (2024). \textit{Interpretable Deep Learning for Diabetic Retinopathy: A Comparative Study of CNN, ViT, and Hybrid Architectures}. MDPI Applied Sciences, 14(5), 187.
+
+% \bibitem{Tymchenko2020} Tymchenko, B., Tymchenko, A., Tishchenko, T., Khlopunov, O., Pliuta, O., Sytnyk, V., and Vlasov, V. (2020). \textit{Deep Learning-Based Classification of Diabetic Retinopathy Using Multibranch Ensemble with Optimized Loss Functions}. Sensors, 20(11), 3025.
+% \end{enumerate}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+
+% \section{References}
+% \begin{enumerate}[leftmargin=*, label={[\arabic*]}]
+
+% \item Porwal, P., Pachade, S., Kamble, R., Kokare, M., Deshmukh, G., Son, J., Bae, W., Liu, J., and Wang, W. (2020). \textit{IDRiD: Indian Diabetic Retinopathy Image Dataset for Deep Learning}. Data in Brief, 28, 104898.
+
+% % \item Chen, L.C., Papandreou, G., Schroff, F., and Adam, H. (2017). \textit{Rethinking Atrous Convolution for Semantic Image Segmentation}. arXiv preprint arXiv:1706.05587.
+
+% % \item Yu, F., and Koltun, V. (2016). \textit{Multi-Scale Context Aggregation by Dilated Convolutions}. arXiv preprint arXiv:1511.07122.
+
+% % \item Zuiderveld, K. (1994). \textit{Contrast Limited Adaptive Histogram Equalization}. In Graphics Gems IV, Academic Press Professional, Inc., 474–485.
+
+% % \item Lam, C., Yu, C., Huang, L., and Rubin, D. (2018). \textit{Retinal Lesion Detection with Deep Learning Using Large-Scale Data}. Investigative Ophthalmology \& Visual Science, 59(9), 590–596.
+
+% % \item Pratt, H., Coenen, F., Broadbent, D.M., Harding, S.P., and Zheng, Y. (2016). \textit{Convolutional Neural Networks for Diabetic Retinopathy}. Procedia Computer Science, 90, 200–205.
+
+% % 1
+% \item Gulshan, V., Peng, L., Coram, M., Stumpe, M. C., Wu, D., Narayanaswamy, A., Venugopalan, S., Widner, K., Kurian, B., Kim, D., and others (2016). \textit{Development and validation of a deep learning algorithm for detection of diabetic retinopathy in retinal fundus photographs}. JAMA, 316(22), 2402–2410.
+% % 2
+% \item Qummar, S., Khan, F. S., Shah, S. A. A., Khan, A., Haq, I. U., Foote, H., Hoeh, B., Wild, S. H., and Munir, K. (2019). \textit{Deep learning for classification of diabetic retinopathy severity}. Signal Processing: Image Communication, 76, 420–429.
+% % 3
+% \item Li, Z., Keel, S., Liu, C., Meng, H., Zhang, J., He, Z., Li, Y., Wang, Y., Wu, S., Feng, D., and others (2019). \textit{Integration of diabetic retinopathy and macular edema in a deep learning system for diagnosis of diabetic eye diseases}. International Journal of Medical Informatics, 128, 16–21.
+% % 4
+% \item Tymchenko, B., Tymchenko, A., Tishchenko, T., Khlopunov, O., Pliuta, O., Sytnyk, V., and Vlasov, V. (2020). \textit{Deep Learning-Based Classification of Diabetic Retinopathy Using Multibranch Ensemble with Optimized Loss Functions}. Sensors, 20(11), 3025.
+% % 5
+% \item Al-Antary, M. T., and Arafa, Y. (2021). \textit{Multi-Scale Attention Network for Diabetic Retinopathy Classification}. IEEE Access, 9, 54190–54200.
+% % 6
+% \item Ahammed, H., Islam, M. Z., Rahman, M. M., Rashid, T., Rahman, A. S., and Hasan, M. M. (2023). \textit{RDS-DR: An Improved Deep Learning Model for Classifying Severity Levels of Diabetic Retinopathy}. Sensors, 23(19), 8116.
+% % 7
+% \item Zhang, K., Zhang, Z., Lu, J., and Cao, S. (2024). \textit{Interpretable Deep Learning for Diabetic Retinopathy: A Comparative Study of CNN, ViT, and Hybrid Architectures}. MDPI Applied Sciences, 14(5), 187.
+
+% \end{enumerate}
+
+
+\end{document}
