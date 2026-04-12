@@ -573,6 +573,33 @@ def build_model_j(
 # MODEL PREDICTION HELPERS
 # ---------------------------------------------------------------------------
 
+def _is_multi_output_model(model: keras.Model) -> bool:
+    """Return True if model has multiple outputs (DR + DME)."""
+    return len(model.output_names) > 1
+
+
+def _adapt_dataset_for_model(
+    dataset: tf.data.Dataset,
+    model: keras.Model,
+) -> tf.data.Dataset:
+    """Adapt dataset labels to match model output structure.
+
+    The project dataset loader returns labels as a dict with keys
+    ``dr_output`` and ``dme_risk``. Single-output ablation models expect only
+    the ``dme_risk`` target tensor.
+    """
+    label_spec = dataset.element_spec[1]
+    if _is_multi_output_model(model):
+        return dataset
+
+    if isinstance(label_spec, dict):
+        return dataset.map(
+            lambda images, labels: (images, labels["dme_risk"]),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+
+    return dataset
+
 def _get_predictions_ablation(
     model: keras.Model,
     dataset: tf.data.Dataset,
@@ -594,8 +621,10 @@ def _get_predictions_ablation(
     tuple
         ``(y_true, y_proba, y_pred)``
     """
+    dataset_for_model = _adapt_dataset_for_model(dataset, model)
+
     all_true, all_proba = [], []
-    for batch_images, batch_labels in dataset:
+    for batch_images, batch_labels in dataset_for_model:
         preds = model(batch_images, training=False)
         if isinstance(preds, dict):
             proba = preds["dme_risk"].numpy()
@@ -604,7 +633,15 @@ def _get_predictions_ablation(
         else:
             proba = preds.numpy()
 
-        all_true.append(np.argmax(batch_labels.numpy(), axis=-1))
+        if isinstance(batch_labels, dict):
+            y_true_batch = batch_labels["dme_risk"].numpy()
+        else:
+            y_true_batch = batch_labels.numpy()
+
+        if y_true_batch.ndim > 1:
+            all_true.append(np.argmax(y_true_batch, axis=-1))
+        else:
+            all_true.append(y_true_batch.astype(np.int32))
         all_proba.append(proba)
 
     y_true = np.concatenate(all_true)
@@ -651,23 +688,32 @@ def _quick_train(
             monitor="val_loss", patience=3, restore_best_weights=True
         )
     ]
+
+    train_for_model = _adapt_dataset_for_model(train_ds, model)
+    val_for_model = _adapt_dataset_for_model(val_ds, model)
+
+    fit_kwargs = {}
+    if class_weights is not None and not _is_multi_output_model(model):
+        fit_kwargs["class_weight"] = class_weights
+    elif class_weights is not None:
+        logger.info("Skipping class_weight for multi-output model")
     
-    # Try with class_weights first; if it fails, retry without
+    # Extra safety fallback for environments with stricter class_weight checks.
     try:
         history = model.fit(
-            train_ds,
-            validation_data=val_ds,
+            train_for_model,
+            validation_data=val_for_model,
             epochs=epochs,
-            class_weight=class_weights,
             callbacks=callbacks,
             verbose=verbose,
+            **fit_kwargs,
         )
     except ValueError as e:
-        if "class_weight" in str(e) and "single output" in str(e):
+        if "class_weight" in str(e):
             logger.info("Model doesn't support class_weight; retraining without it")
             history = model.fit(
-                train_ds,
-                validation_data=val_ds,
+                train_for_model,
+                validation_data=val_for_model,
                 epochs=epochs,
                 callbacks=callbacks,
                 verbose=verbose,
@@ -999,7 +1045,7 @@ def run_ablation_study(
                 category_predictions[name] = y_pred
                 y_true_global = y_true  # Store for significance tests
                 
-                logger.info("[OK] %s ? QWK=%.4f | Acc=%.4f | F1=%.4f [%.1fs]",
+                logger.info("[OK] %s -> QWK=%.4f | Acc=%.4f | F1=%.4f [%.1fs]",
                           name, ordinal["qwk"], acc, f1, elapsed)
 
             except Exception as e:
@@ -1022,7 +1068,7 @@ def run_ablation_study(
                 
                 significance = "[OK] SIGNIFICANT" if sig_test["significant"] else "[X] not significant"
                 logger.info(
-                    "  %s vs %s: ?=%.4f [%.4f, %.4f] p=%.3f %s",
+                    "  %s vs %s: delta=%.4f [%.4f, %.4f] p=%.3f %s",
                     results[i]["name"].split(": ")[0],
                     results[i + 1]["name"].split(": ")[0],
                     sig_test["delta"],
@@ -1077,7 +1123,7 @@ def run_ablation_study(
     logger.info("  Multi-task contribution: +%.4f QWK", comprehensive_summary["component_gains"]["MultiTask"])
     logger.info("  Two-stage training contribution: +%.4f QWK", comprehensive_summary["component_gains"]["TwoStage"])
     logger.info("  Loss function stack contribution: +%.4f QWK", comprehensive_summary["component_gains"]["LossStack"])
-    logger.info("  TOTAL IMPROVEMENT (A?C): +%.4f QWK", comprehensive_summary["total_improvement"])
+    logger.info("  TOTAL IMPROVEMENT (A->C): +%.4f QWK", comprehensive_summary["total_improvement"])
     logger.info("=" * 70 + "\n")
 
     return comprehensive_summary
