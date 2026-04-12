@@ -31,10 +31,16 @@ import json
 import logging
 import os
 import time
+import gc
 from collections.abc import Mapping
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+# Keep TensorFlow runtime conservative for long ablation sweeps on Kaggle GPUs.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_XLA_FLAGS", "--tf_xla_auto_jit=0")
+
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -601,6 +607,64 @@ def _adapt_dataset_for_model(
 
     return dataset
 
+
+def _rebatch_dataset(dataset: tf.data.Dataset, batch_size: int) -> tf.data.Dataset:
+    """Re-batch an existing dataset for OOM fallback retries."""
+    return dataset.unbatch().batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+
+def _add_multitask_sample_weights(
+    dataset: tf.data.Dataset,
+    class_weights: Dict,
+) -> tf.data.Dataset:
+    """Attach sample weights for multi-output models using DME class weights."""
+    keys = tf.constant(list(class_weights.keys()), dtype=tf.int32)
+    values = tf.constant(list(class_weights.values()), dtype=tf.float32)
+    table = tf.lookup.StaticHashTable(
+        tf.lookup.KeyValueTensorInitializer(keys, values),
+        default_value=tf.constant(1.0, dtype=tf.float32),
+    )
+
+    def map_fn(images, labels):
+        dme_labels = labels["dme_risk"]
+        dme_indices = tf.cast(tf.argmax(dme_labels, axis=-1), tf.int32)
+        dme_weights = table.lookup(dme_indices)
+        dr_weights = tf.ones_like(dme_weights, dtype=tf.float32)
+        sample_weights = {"dr_output": dr_weights, "dme_risk": dme_weights}
+        return images, labels, sample_weights
+
+    return dataset.map(map_fn, num_parallel_calls=tf.data.AUTOTUNE)
+
+
+def _class_distribution(labels: np.ndarray, num_classes: int) -> Dict[int, int]:
+    """Return a {class_index: count} distribution dict."""
+    counts = np.bincount(labels.astype(int), minlength=num_classes)
+    return {int(i): int(c) for i, c in enumerate(counts)}
+
+
+def _prediction_collapse_stats(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    num_classes: int,
+    collapse_threshold: float = 0.90,
+) -> Dict:
+    """Compute class-distribution diagnostics to detect mode collapse."""
+    true_dist = _class_distribution(y_true, num_classes)
+    pred_dist = _class_distribution(y_pred, num_classes)
+    total_pred = max(len(y_pred), 1)
+    dominant_class = int(np.argmax(np.bincount(y_pred.astype(int), minlength=num_classes)))
+    dominant_ratio = float(pred_dist[dominant_class]) / float(total_pred)
+    collapsed = dominant_ratio >= collapse_threshold
+
+    return {
+        "true_distribution": true_dist,
+        "pred_distribution": pred_dist,
+        "dominant_pred_class": dominant_class,
+        "dominant_pred_ratio": round(dominant_ratio, 4),
+        "collapsed": bool(collapsed),
+        "collapse_threshold": collapse_threshold,
+    }
+
 def _get_predictions_ablation(
     model: keras.Model,
     dataset: tf.data.Dataset,
@@ -662,6 +726,7 @@ def _quick_train(
     epochs: int = 5,
     class_weights: Optional[Dict] = None,
     verbose: int = 0,
+    oom_batch_fallback: Optional[List[int]] = None,
 ) -> keras.callbacks.History:
     """Train a model variant for a quick ablation experiment.
 
@@ -679,6 +744,8 @@ def _quick_train(
         Per-class weights (only for models supporting this).
     verbose : int
         Verbosity.
+    oom_batch_fallback : list of int, optional
+        Batch sizes to retry when GPU OOM happens, e.g. [4, 2, 1].
 
     Returns
     -------
@@ -697,21 +764,59 @@ def _quick_train(
     if class_weights is not None and not _is_multi_output_model(model):
         fit_kwargs["class_weight"] = class_weights
     elif class_weights is not None:
-        logger.info("Skipping class_weight for multi-output model")
+        logger.info("Using sample_weight mapping for multi-output model")
+        train_for_model = _add_multitask_sample_weights(train_for_model, class_weights)
+        val_for_model = _add_multitask_sample_weights(val_for_model, class_weights)
     
     # Extra safety fallback for environments with stricter class_weight checks.
+    fallback_batch_sizes = oom_batch_fallback or [4, 2, 1]
+
+    def fit_with_possible_rebatch(train_data, val_data):
+        attempts = [None] + fallback_batch_sizes
+        last_oom_error = None
+
+        for attempt_batch in attempts:
+            if attempt_batch is None:
+                train_attempt = train_data
+                val_attempt = val_data
+                logger.info("Training attempt with original batch size")
+            else:
+                logger.warning("OOM fallback: retrying with batch_size=%d", attempt_batch)
+                train_attempt = _rebatch_dataset(train_data, attempt_batch)
+                val_attempt = _rebatch_dataset(val_data, attempt_batch)
+
+            try:
+                return model.fit(
+                    train_attempt,
+                    validation_data=val_attempt,
+                    epochs=epochs,
+                    callbacks=callbacks,
+                    verbose=verbose,
+                    **fit_kwargs,
+                )
+            except Exception as ex:
+                msg = str(ex).lower()
+                is_oom = (
+                    isinstance(ex, tf.errors.ResourceExhaustedError)
+                    or "out of memory" in msg
+                    or "oom" in msg
+                )
+                if not is_oom:
+                    raise
+                last_oom_error = ex
+                continue
+
+        if last_oom_error is not None:
+            raise last_oom_error
+
+        raise RuntimeError("Training failed before OOM fallback could run")
+
     try:
-        history = model.fit(
-            train_for_model,
-            validation_data=val_for_model,
-            epochs=epochs,
-            callbacks=callbacks,
-            verbose=verbose,
-            **fit_kwargs,
-        )
+        history = fit_with_possible_rebatch(train_for_model, val_for_model)
     except ValueError as e:
         if "class_weight" in str(e):
             logger.info("Model doesn't support class_weight; retraining without it")
+            fit_kwargs.pop("class_weight", None)
             history = model.fit(
                 train_for_model,
                 validation_data=val_for_model,
@@ -954,6 +1059,7 @@ def run_ablation_study(
     seed: int = 42,
     ablation_mode: str = "all",
     backbone_weights: Optional[str] = "imagenet",
+    oom_batch_fallback: Optional[List[int]] = None,
 ) -> Dict:
     """Run comprehensive ablation study with 10+ model variants.
 
@@ -983,6 +1089,8 @@ def run_ablation_study(
     backbone_weights : str or None
         Backbone initialization for ResNet50. Use "imagenet" (default),
         None, or a local .h5/.keras weights file path.
+    oom_batch_fallback : list of int, optional
+        Batch sizes to retry when OOM happens.
 
     Returns
     -------
@@ -1043,6 +1151,7 @@ def run_ablation_study(
         for name, builder in model_configs[category]:
             logger.info("\n>> Training %s ...", name)
             t0 = time.time()
+            model = None
 
             try:
                 if name.startswith("Model C") or name.startswith("Model D") or name.startswith("Model E"):
@@ -1059,12 +1168,14 @@ def run_ablation_study(
                     )
 
                 _quick_train(model, train_ds, val_ds, epochs=epochs,
-                           class_weights=class_weights, verbose=1)
+                           class_weights=class_weights, verbose=1,
+                           oom_batch_fallback=oom_batch_fallback)
 
                 y_true, y_proba, y_pred = _get_predictions_ablation(model, val_ds, num_classes)
                 ordinal = compute_ordinal_metrics(y_true, y_pred, num_classes)
                 acc = compute_accuracy(y_true, y_pred)
                 f1 = compute_f1(y_true, y_pred, average="macro")
+                collapse_stats = _prediction_collapse_stats(y_true, y_pred, num_classes)
 
                 elapsed = time.time() - t0
                 result = {
@@ -1077,6 +1188,11 @@ def run_ablation_study(
                     "target_met": ordinal["qwk"] >= 0.80,
                     "training_time_s": round(elapsed, 1),
                     "params": int(model.count_params()),
+                    "true_distribution": collapse_stats["true_distribution"],
+                    "pred_distribution": collapse_stats["pred_distribution"],
+                    "dominant_pred_class": collapse_stats["dominant_pred_class"],
+                    "dominant_pred_ratio": collapse_stats["dominant_pred_ratio"],
+                    "prediction_collapsed": collapse_stats["collapsed"],
                 }
                 results.append(result)
                 category_predictions[name] = y_pred
@@ -1084,10 +1200,28 @@ def run_ablation_study(
                 
                 logger.info("[OK] %s -> QWK=%.4f | Acc=%.4f | F1=%.4f [%.1fs]",
                           name, ordinal["qwk"], acc, f1, elapsed)
+                logger.info(
+                    "Class dist true=%s | pred=%s | dominant_pred_class=%d (%.2f%%)",
+                    collapse_stats["true_distribution"],
+                    collapse_stats["pred_distribution"],
+                    collapse_stats["dominant_pred_class"],
+                    100.0 * collapse_stats["dominant_pred_ratio"],
+                )
+                if collapse_stats["collapsed"]:
+                    logger.warning(
+                        "Prediction collapse detected for %s: one class covers %.2f%% of predictions",
+                        name,
+                        100.0 * collapse_stats["dominant_pred_ratio"],
+                    )
 
             except Exception as e:
                 logger.error("[X] Error training %s: %s", name, str(e))
                 continue
+            finally:
+                if model is not None:
+                    del model
+                tf.keras.backend.clear_session()
+                gc.collect()
 
         all_results[category] = results
         all_predictions[category] = category_predictions
@@ -1187,6 +1321,12 @@ def main():
     parser.add_argument("--mode", type=str, default="all", 
                        choices=["all", "arch", "loss", "stage"])
     parser.add_argument(
+        "--oom-fallback-batches",
+        type=str,
+        default="4,2,1",
+        help="Comma-separated batch sizes to retry on OOM, e.g. 4,2,1",
+    )
+    parser.add_argument(
         "--use-backbone",
         type=str,
         default=None,
@@ -1206,6 +1346,31 @@ def main():
     )
     parser.add_argument("--mock", action="store_true")
     args = parser.parse_args()
+
+    # Stabilize runtime: disable XLA JIT and use one GPU with memory growth.
+    try:
+        tf.config.optimizer.set_jit(False)
+        gpus = tf.config.list_physical_devices("GPU")
+        if gpus:
+            try:
+                tf.config.set_visible_devices(gpus[0], "GPU")
+            except RuntimeError:
+                pass
+            visible_gpus = tf.config.list_physical_devices("GPU")
+            for gpu in visible_gpus:
+                try:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                except RuntimeError:
+                    pass
+            logger.info("Runtime configured for stability: %d visible GPU(s), XLA JIT disabled", len(visible_gpus))
+    except Exception as cfg_err:
+        logger.warning("Could not fully apply runtime stability settings: %s", cfg_err)
+
+    oom_batch_fallback = [
+        int(x.strip())
+        for x in args.oom_fallback_batches.split(",")
+        if x.strip()
+    ]
 
     if args.mock or args.csv is None:
         logger.info("Using mock dataset.")
@@ -1261,6 +1426,7 @@ def main():
             n_bootstrap=args.n_bootstrap,
             ablation_mode=args.mode,
             backbone_weights=backbone_setting,
+            oom_batch_fallback=oom_batch_fallback,
         )
         all_experiment_results[exp_name] = exp_results
 
