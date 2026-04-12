@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -592,7 +593,7 @@ def _adapt_dataset_for_model(
     if _is_multi_output_model(model):
         return dataset
 
-    if isinstance(label_spec, dict):
+    if isinstance(label_spec, Mapping):
         return dataset.map(
             lambda images, labels: (images, labels["dme_risk"]),
             num_parallel_calls=tf.data.AUTOTUNE,
@@ -714,6 +715,29 @@ def _quick_train(
             history = model.fit(
                 train_for_model,
                 validation_data=val_for_model,
+                epochs=epochs,
+                callbacks=callbacks,
+                verbose=verbose,
+            )
+        elif "y_true and y_pred have different structures" in str(e):
+            logger.info("Retrying with forced dme_risk label mapping for single-output model")
+            forced_train = train_ds.map(
+                lambda images, labels: (
+                    images,
+                    labels["dme_risk"] if isinstance(labels, Mapping) else labels,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+            forced_val = val_ds.map(
+                lambda images, labels: (
+                    images,
+                    labels["dme_risk"] if isinstance(labels, Mapping) else labels,
+                ),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+            history = model.fit(
+                forced_train,
+                validation_data=forced_val,
                 epochs=epochs,
                 callbacks=callbacks,
                 verbose=verbose,
@@ -929,6 +953,7 @@ def run_ablation_study(
     n_bootstrap: int = 500,
     seed: int = 42,
     ablation_mode: str = "all",
+    backbone_weights: Optional[str] = "imagenet",
 ) -> Dict:
     """Run comprehensive ablation study with 10+ model variants.
 
@@ -955,6 +980,9 @@ def run_ablation_study(
     ablation_mode : str
         "all" = run all variants, "arch" = architecture only,
         "loss" = loss function only, "stage" = two-stage only
+    backbone_weights : str or None
+        Backbone initialization for ResNet50. Use "imagenet" (default),
+        None, or a local .h5/.keras weights file path.
 
     Returns
     -------
@@ -962,6 +990,7 @@ def run_ablation_study(
         Comprehensive ablation results.
     """
     os.makedirs(output_dir, exist_ok=True)
+    logger.info("Backbone setting for this run: %s", backbone_weights)
 
     # Define model configurations by category
     model_configs = {
@@ -1017,9 +1046,17 @@ def run_ablation_study(
 
             try:
                 if name.startswith("Model C") or name.startswith("Model D") or name.startswith("Model E"):
-                    model = builder(input_shape=input_shape, num_dme_classes=num_classes)
+                    model = builder(
+                        input_shape=input_shape,
+                        num_dme_classes=num_classes,
+                        backbone_weights=backbone_weights,
+                    )
                 else:
-                    model = builder(input_shape=input_shape, num_classes=num_classes)
+                    model = builder(
+                        input_shape=input_shape,
+                        num_classes=num_classes,
+                        backbone_weights=backbone_weights,
+                    )
 
                 _quick_train(model, train_ds, val_ds, epochs=epochs,
                            class_weights=class_weights, verbose=1)
@@ -1080,6 +1117,7 @@ def run_ablation_study(
 
     # Compile comprehensive summary
     comprehensive_summary = {
+        "backbone_weights": backbone_weights,
         "categories": all_results,
         "component_gains": {
             "ASPP": round(
@@ -1148,6 +1186,24 @@ def main():
     parser.add_argument("--n-bootstrap", type=int, default=200)
     parser.add_argument("--mode", type=str, default="all", 
                        choices=["all", "arch", "loss", "stage"])
+    parser.add_argument(
+        "--use-backbone",
+        type=str,
+        default=None,
+        help="Path to a custom backbone weights file for one additional comparison run.",
+    )
+    parser.add_argument(
+        "--eyepacs-backbone",
+        type=str,
+        default=None,
+        help="Path to EyePACS-pretrained backbone weights for comparison.",
+    )
+    parser.add_argument(
+        "--all-datasets-backbone",
+        type=str,
+        default=None,
+        help="Path to backbone weights pretrained on all datasets for comparison.",
+    )
     parser.add_argument("--mock", action="store_true")
     args = parser.parse_args()
 
@@ -1161,18 +1217,71 @@ def main():
         csv_path=csv_path, image_dir=image_dir, batch_size=args.batch_size,
     )
 
-    results = run_ablation_study(
-        train_ds=train_ds,
-        val_ds=val_ds,
-        class_weights=class_weights,
-        epochs=args.epochs,
-        output_dir=args.output_dir,
-        n_bootstrap=args.n_bootstrap,
-        ablation_mode=args.mode,
-    )
+    # Build experiment list: baseline (without custom backbone) + optional custom backbones.
+    experiments: List[Tuple[str, Optional[str]]] = [
+        ("baseline_imagenet", "imagenet"),
+    ]
 
-    print("\n[OK] Ablation Study Complete!")
-    print(json.dumps(results["component_gains"], indent=2))
+    optional_backbones = [
+        ("custom_backbone", args.use_backbone),
+        ("eyepacs_backbone", args.eyepacs_backbone),
+        ("all_datasets_backbone", args.all_datasets_backbone),
+    ]
+
+    for exp_name, backbone_path in optional_backbones:
+        if not backbone_path:
+            continue
+        if not os.path.exists(backbone_path):
+            raise FileNotFoundError(
+                f"Backbone file for {exp_name} not found: {backbone_path}"
+            )
+        experiments.append((exp_name, backbone_path))
+
+    # Remove accidental duplicate experiments that point to the same backbone path.
+    unique_experiments: List[Tuple[str, Optional[str]]] = []
+    seen_backbones = set()
+    for exp_name, backbone_setting in experiments:
+        key = backbone_setting if backbone_setting is not None else "<none>"
+        if key in seen_backbones:
+            continue
+        seen_backbones.add(key)
+        unique_experiments.append((exp_name, backbone_setting))
+
+    all_experiment_results = {}
+    for exp_name, backbone_setting in unique_experiments:
+        logger.info("\n%s\nRunning experiment: %s\n%s", "#" * 70, exp_name, "#" * 70)
+        exp_output_dir = os.path.join(args.output_dir, exp_name)
+
+        exp_results = run_ablation_study(
+            train_ds=train_ds,
+            val_ds=val_ds,
+            class_weights=class_weights,
+            epochs=args.epochs,
+            output_dir=exp_output_dir,
+            n_bootstrap=args.n_bootstrap,
+            ablation_mode=args.mode,
+            backbone_weights=backbone_setting,
+        )
+        all_experiment_results[exp_name] = exp_results
+
+    comparison_summary = {
+        "experiments": {
+            exp_name: {
+                "backbone_weights": result.get("backbone_weights"),
+                "component_gains": result.get("component_gains", {}),
+                "total_improvement": result.get("total_improvement", 0),
+            }
+            for exp_name, result in all_experiment_results.items()
+        }
+    }
+
+    comparison_json_path = os.path.join(args.output_dir, "backbone_comparison_summary.json")
+    os.makedirs(args.output_dir, exist_ok=True)
+    with open(comparison_json_path, "w") as f:
+        json.dump(comparison_summary, f, indent=2)
+
+    print("\n[OK] Backbone Ablation Study Complete!")
+    print(json.dumps(comparison_summary, indent=2))
 
 
 if __name__ == "__main__":
