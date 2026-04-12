@@ -2410,4 +2410,122 @@ Clinical-grade AI systems typically require:
 \newpage
 
 % ============================================================================
+% SECTION 9: CONCLUSIONS AND FUTURE% prevalence)
+    \item Single-model assessment of both tasks (vs. multiple separate models)
+\end{itemize}
+
+\subsubsection{Limitations}
+
+\begin{itemize}
+    \item DME detection from 2D fundus images has clinical limits (cannot assess retinal thickness)
+    \item OCT (optical coherence tomography) is gold standard for DME diagnosis
+    \item AI model useful for screening/triage but cannot replace OCT
+    \item Hard exudates and edema-like appearance in fundus image correlate with DME but are not diagnostic
+\end{itemize}
+
+\subsection{Regulatory Pathway and Clinical Deployment}
+
+\subsubsection{FDA/CE Approval Path}
+
+Clinical-grade AI systems typically require:
+
+\begin{enumerate}
+    \item \textbf{Clinical Validation} (✓ achieved):
+    \begin{itemize}
+        \item QWK comparison with specialist agreement (0.81 ≈ 0.80-0.85)
+        \item Performance on diverse datasets (IDRiD, EyePACS, APTOS, Messidor)
+    \end{itemize}
+    
+    \item \textbf{Multi-Dataset Validation} (✓ in progress):
+    \begin{itemize}
+        \item Generalization testing on external datasets
+        \item Demographic fairness audits
+    \end{itemize}
+    
+    \item \textbf{Adverse Event Tracking} (⚠ needed):
+    \begin{itemize}
+        \item Prospective tracking of false negatives (missed DR/DME)
+        \item False positives (unnecessary referrals)
+        \item Documentation and root cause analysis
+    \end{itemize}
+    
+    \item \textbf{Explainability} (✓ feasible):
+    \begin{itemize}
+        \item Grad-CAM visualizations showing decision-influencing regions
+        \item Feature importance analysis
+        \item Confidence estimation via Monte Carlo Dropout
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{Bias and Fairness Considerations}
+
+\begin{itemize}
+    \item \textbf{Dataset Bias}: IDRiD primarily Indian population; may underperform on other ethnicities
+    \item \textbf{Mitigation}: EyePACS pre-training includes diverse demographics; APTOS validation on Asian data
+    \item \textbf{Ongoing}: Collect diverse, balanced datasets; audit performance per demographic group
+    \item \textbf{Responsibility}: Transparent reporting of limitations; do not deploy in populations not represented in validation
+\end{itemize}
+
+\newpage
+
+% ============================================================================
+% SECTION 9: CONCLUSIONS AND FUTURE% prevalence)
+    \item Single-model assessment of both tasks (vs. multiple separate models)
+\end{itemize}
+
+\subsubsection{Limitations}
+
+\begin{itemize}
+    \item DME detection from 2D fundus images has clinical limits (cannot assess retinal thickness)
+    \item OCT (optical coherence tomography) is gold standard for DME diagnosis
+    \item AI model useful for screening/triage but cannot replace OCT
+    \item Hard exudates and edema-like appearance in fundus image correlate with DME but are not diagnostic
+\end{itemize}
+
+\subsection{Regulatory Pathway and Clinical Deployment}
+
+\subsubsection{FDA/CE Approval Path}
+
+Clinical-grade AI systems typically require:
+
+\begin{enumerate}
+    \item \textbf{Clinical Validation} (✓ achieved):
+    \begin{itemize}
+        \item QWK comparison with specialist agreement (0.81 ≈ 0.80-0.85)
+        \item Performance on diverse datasets (IDRiD, EyePACS, APTOS, Messidor)
+    \end{itemize}
+    
+    \item \textbf{Multi-Dataset Validation} (✓ in progress):
+    \begin{itemize}
+        \item Generalization testing on external datasets
+        \item Demographic fairness audits
+    \end{itemize}
+    
+    \item \textbf{Adverse Event Tracking} (⚠ needed):
+    \begin{itemize}
+        \item Prospective tracking of false negatives (missed DR/DME)
+        \item False positives (unnecessary referrals)
+        \item Documentation and root cause analysis
+    \end{itemize}
+    
+    \item \textbf{Explainability} (✓ feasible):
+    \begin{itemize}
+        \item Grad-CAM visualizations showing decision-influencing regions
+        \item Feature importance analysis
+        \item Confidence estimation via Monte Carlo Dropout
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{Bias and Fairness Considerations}
+
+\begin{itemize}
+    \item \textbf{Dataset Bias}: IDRiD primarily Indian population; may underperform on other ethnicities
+    \item \textbf{Mitigation}: EyePACS pre-training includes diverse demographics; APTOS validation on Asian data
+    \item \textbf{Ongoing}: Collect diverse, balanced datasets; audit performance per demographic group
+    \item \textbf{Responsibility}: Transparent reporting of limitations; do not deploy in populations not represented in validation
+\end{itemize}
+
+\newpage
+
+% ============================================================================
 % SECTION 9: CONCLUSIONS AND FUTURE
