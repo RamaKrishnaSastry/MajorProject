@@ -1,142 +1,235 @@
-# MajorProject – Multi-Task Diabetic Retinopathy (DR) + DME Detection System
+# MajorProject - Multi-Task DR + DME Detection System
 
-A production-ready deep learning system for joint detection of **Diabetic Retinopathy (DR)** and **Diabetic Macular Edema (DME)** severity using the **DR-ASPP-DRN** architecture.
+Production-focused deep learning pipeline for joint grading of:
 
-**Primary metric: Quadratic Weighted Kappa (QWK) ≥ 0.80**
+- Diabetic Macular Edema (DME): 3-class ordinal classification
+- Diabetic Retinopathy (DR): 5-class classification
 
----
+## Main Branch Benchmark Status
 
-## 📦 Repository Structure
+This main branch currently tracks the best validated run where both tasks crossed the project bar:
 
-```
+- DME QWK > 0.80
+- DR QWK > 0.80
+
+Use this as the reference milestone when comparing future experiments, ablations, or branch-level changes.
+
+## Why This Project Exists
+
+The pipeline is designed for real training workflows, not just notebook demos:
+
+- Two-stage training with safe stage2 fine-tuning controls
+- QWK-first monitoring and checkpointing
+- Joint DME+DR model selection policy
+- Robust evaluation with calibration, geometric TTA, and checkpoint ensembling
+- Reproducible output artifacts for experiment comparison
+
+## Repository Layout
+
+```text
 MajorProject/
-├── preprocess.py                  ← Medical preprocessing (CLAHE, cropping, normalisation)
-├── dataset_loader.py              ← IRDID pipeline, class weights, tf.data
-├── dataset_loader_advanced.py     ← QWK-aware stratification, ordinal class weights
-├── model.py                       ← DR-ASPP-DRN architecture (ResNet50 + ASPP + dual heads)
-├── train.py                       ← Standard training orchestration
-├── train_enhanced.py              ← QWK-aware training with ordinal loss
-├── evaluate.py                    ← Base evaluation (F1, AUC, confusion matrix)
-├── evaluate_comprehensive.py      ← Full QWK + ordinal + boundary confusion evaluation
-├── qwk_metrics.py                 ← Quadratic Weighted Kappa computation + visualisation
-├── ablation_study.py              ← Model A/B/C ablation comparison
-├── main_pipeline.py               ← End-to-end pipeline orchestration
-├── config.yaml                    ← Centralised hyperparameter configuration
-├── requirements.txt               ← Python dependencies
-├── train_dme_model.ipynb          ← Jupyter notebook workflow
-├── README.md                      ← This file
-├── ARCHITECTURE.md                ← DR-ASPP-DRN design documentation
-├── RESULTS.md                     ← Expected performance benchmarks
-└── QUICKSTART.md                  ← Copy-paste runnable examples
+|-- main_pipeline.py
+|-- train_enhanced.py
+|-- evaluate_comprehensive.py
+|-- qwk_metrics.py
+|-- model.py
+|-- dataset_loader.py
+|-- dataset_loader_advanced.py
+|-- preprocess.py
+|-- config.yaml
+|-- QUICKSTART.md
+|-- USAGE_GUIDE.md
+|-- ARCHITECTURE.md
+|-- RESULTS.md
+|-- CHANGELOG.md
+`-- docs/
 ```
 
----
+## Model Summary
 
-## 🚀 Quick Start
+Backbone and shared trunk:
+
+- ResNet50 backbone truncated at conv4_block6_out
+- ASPP multi-scale context block
+
+Task heads:
+
+- DR head: residual MLP + softmax over 5 DR grades
+- DME head: softmax over 3 ordinal DME grades
+
+## Training Strategy
+
+Stage 1 (initial training):
+
+- Backbone frozen
+- Train ASPP + heads
+- Warmup + QWK callbacks
+- Saves best_qwk, best_dr, and best_joint (when criteria are met)
+
+Stage 2 (fine-tuning):
+
+- Starts from Stage 1 checkpoint
+- Backbone unfrozen with BN freeze safeguards
+- Collapse guard and revert-if-worse protections
+- Joint checkpointing remains active
+
+## Selection Policy (Joint Focus)
+
+The pipeline uses a strict-to-relaxed tier ladder for checkpoint and final-stage selection.
+Primary target tier:
+
+- DME >= 0.70 and DR >= 0.80
+
+With DME floor enforcement and fallback tiers if primary constraints are not met.
+
+## Evaluation Stack
+
+Comprehensive evaluation includes:
+
+- DME: QWK, MAE, RMSE, accuracy, F1, boundary confusion
+- DR: QWK, accuracy, MAE, RMSE, confusion matrix
+- Optional threshold calibration (DME + DR)
+- Optional geometric TTA:
+  - none
+  - hflip
+  - rot4
+  - dihedral8
+- Optional checkpoint probability ensembling
+
+## Quick Start
+
+Install:
 
 ```bash
 pip install -r requirements.txt
+```
 
-# Full pipeline with mock data (no real dataset needed)
+Smoke test:
+
+```bash
 python main_pipeline.py --mock --epochs 5 --single-stage
+```
 
-# Full pipeline with real IRDID data
+Full run:
+
+```bash
 python main_pipeline.py \
   --csv /path/to/DME_Grades.csv \
   --image-dir /path/to/images \
   --config config.yaml
 ```
 
-See [QUICKSTART.md](QUICKSTART.md) for all runnable examples.
-See [USAGE_GUIDE.md](USAGE_GUIDE.md) for troubleshooting and detailed workflows.
+## Common Run Modes
 
----
+```bash
+# Stage 1 only
+python main_pipeline.py --csv /path/to/DME_Grades.csv --image-dir /path/to/images --single-stage
 
-## 🏗️ Architecture
+# Stage 2 only (requires stage1 artifacts)
+python main_pipeline.py --csv /path/to/DME_Grades.csv --image-dir /path/to/images --stage2-only
 
-The **DR-ASPP-DRN** architecture combines:
-- **ResNet50 backbone** (ImageNet pre-training)
-- **ASPP module** (multi-scale context with dilation rates 6, 12, 18)
-- **DR head** (regression, sigmoid output)
-- **DME head** (3-class ordinal classification, softmax output)
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design documentation.
-
----
-
-## 📊 Key Metrics
-
-| Metric | Target | Description |
-|--------|--------|-------------|
-| **QWK** | **≥ 0.80** | Main success criterion – clinical-grade agreement |
-| F1 (Macro) | ≥ 0.79 | Class imbalance handling |
-| Accuracy | ≥ 0.81 | Overall correctness |
-| MAE | ≤ 0.25 | Ordinal label distance |
-
-See [RESULTS.md](RESULTS.md) for detailed benchmarks.
-
----
-
-## 🧩 Module Overview
-
-### `qwk_metrics.py`
-- Quadratic Weighted Kappa computation with detailed logs
-- Ordinal MAE, RMSE metrics
-- Boundary confusion detection (Mild/Moderate confusion)
-- Ordinal confusion matrix visualisation
-- `QWKCallback` for epoch-level monitoring
-
-### `train_enhanced.py`
-- QWK-aware callbacks (ModelCheckpoint, EarlyStopping, ReduceLR)
-- Ordinal-weighted cross-entropy loss
-- Training diagnostics dashboard
-- History JSON with QWK tracking
-
-### `dataset_loader_advanced.py`
-- Ordinal stratified train/val split
-- Medical domain class weights (Severe > Moderate > Mild > No DME)
-- K-fold cross-validation support
-- Dataset balance visualisation
-
-### `evaluate_comprehensive.py`
-- Full QWK evaluation pipeline
-- Boundary confusion analysis
-- 6-panel evaluation dashboard
-- Medical interpretation of results
-
-### `ablation_study.py`
-- Model A: Baseline ResNet50 (~0.73–0.75 QWK)
-- Model B: ResNet50 + ASPP (~0.76–0.78 QWK)
-- Model C: Full DR-ASPP-DRN (≥ 0.80 QWK)
-- Bootstrap significance testing
-
-### `main_pipeline.py`
-- 2-stage training (initial → fine-tuning)
-- Automatic best-model checkpointing by QWK
-- Results aggregation and pipeline report
-
----
-
-## 📋 Dataset
-
-Compatible with the **IRDID (Indian Retinal Image Dataset)** CSV format:
-
-```
-Image name, Risk of macular edema
-img001, 0
-img002, 2
-img003, 1
+# Select stage2 schedule
+python main_pipeline.py --csv /path/to/DME_Grades.csv --image-dir /path/to/images --long-stage2
+python main_pipeline.py --csv /path/to/DME_Grades.csv --image-dir /path/to/images --short-stage2
 ```
 
-Labels: `0=No DME`, `1=Mild`, `2=Moderate`
+## Dataset Format
 
----
+Required columns (aliases supported by loaders):
 
-## 🔬 Research Publication Ready
+- Image name
+- Risk of macular edema (0..2)
+- Retinopathy grade (0..4)
 
-- ✅ QWK ≥ 0.80 target pathway
-- ✅ Ordinal classification support
-- ✅ Medical domain knowledge integration
-- ✅ Full reproducibility (seed + split_info.json)
-- ✅ Ablation study with statistical significance testing
-- ✅ Comprehensive visualisation suite (confusion matrix, training curves, dashboard)
+Example:
+
+```csv
+Image name,Risk of macular edema,Retinopathy grade
+img001,0,0
+img002,1,2
+img003,2,4
+```
+
+Label spaces:
+
+- DME: 0 No DME, 1 Mild, 2 Moderate
+- DR: 0 No DR, 1 Mild, 2 Moderate, 3 Severe NPDR, 4 Proliferative DR
+
+## Most Important Config Knobs
+
+Data and split:
+
+- batch_size
+- val_split
+- use_advanced_loader
+- oversample_minority_enabled
+
+Training:
+
+- stage1.epochs, stage1.learning_rate
+- stage2.epochs, stage2.learning_rate
+- stage2.dr_loss_weight
+- stage2.collapse*guard*\* settings
+
+Joint selection:
+
+- joint_selection.thresholds
+- joint_selection.dme_floor
+
+Evaluation:
+
+- evaluation.tta_mode
+- evaluation.checkpoint_ensemble_enabled
+- evaluation.calibrate_dme_thresholds
+- evaluation.calibrate_dr_thresholds
+- evaluation.dr_calibration_max_accuracy_drop
+
+## Output Artifacts
+
+Typical outputs:
+
+```text
+pipeline_outputs/
+|-- effective_config.json
+|-- model_stage1.weights.h5
+|-- model_stage2.weights.h5
+|-- history_stage1.json
+|-- history_stage2.json
+|-- qwk_epoch_table_stage1.csv
+|-- qwk_epoch_table_stage2.csv
+|-- pipeline_report.json
+|-- eval_stage1/
+|   `-- comprehensive_metrics.json
+|-- eval_stage2/
+|   `-- comprehensive_metrics.json
+`-- checkpoints/
+    |-- stage1/
+    `-- stage2/
+```
+
+Start comparisons from:
+
+- pipeline_outputs/pipeline_report.json
+- pipeline_outputs/eval_stage1/comprehensive_metrics.json
+- pipeline_outputs/eval_stage2/comprehensive_metrics.json
+
+## Documentation Map
+
+- QUICKSTART.md: command-first examples
+- USAGE_GUIDE.md: practical runbook and troubleshooting
+- ARCHITECTURE.md: detailed model and callback internals
+- RESULTS.md: benchmark interpretation and reporting template
+- CHANGELOG.md: change history
+- docs/INSTALL.md: setup instructions
+- docs/FIXES.md: targeted fix notes
+
+## Reproducibility Notes
+
+The pipeline saves:
+
+- effective_config.json for each run
+- split information and class balance artifacts
+- per-epoch histories and QWK traces
+- stage-wise evaluation reports
+
+Use a fixed seed and the same split strategy when making run-to-run comparisons.

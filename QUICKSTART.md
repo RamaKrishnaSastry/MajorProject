@@ -1,213 +1,181 @@
-# Quickstart Guide
+# Quickstart Guide (Main Branch)
 
-Copy-paste runnable examples to get the DR+DME detection system running.
+Copy-paste workflows for the current DR+DME multi-task pipeline.
 
----
-
-## Prerequisites
+## 0) Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
-
-## 1. Smoke Test with Mock Data (No dataset required)
+## 1) Smoke Test (No Real Dataset Needed)
 
 ```bash
-# Generate 80 synthetic fundus images and run the full pipeline
-python main_pipeline.py --mock --epochs 5 --single-stage --output-dir /tmp/smoke_test
-
-# Expected output:
-# INFO: Stage 1 QWK: 0.xxxx
-# INFO: Pipeline report saved
+python main_pipeline.py --mock --epochs 5 --single-stage --output-dir pipeline_outputs_smoke
 ```
 
----
+Expected outcome:
+- Stage 1 trains and evaluates end-to-end
+- pipeline_report.json is generated
 
-## 2. Compute QWK on Existing Predictions
-
-```bash
-# If you have y_true.npy and y_pred.npy
-python qwk_metrics.py \
-  --y-true /path/to/y_true.npy \
-  --y-pred /path/to/y_pred.npy \
-  --output-dir results/
-```
-
----
-
-## 3. Train DME Model (Standard)
+## 2) Full Real-Data Pipeline
 
 ```bash
-python train.py \
+python main_pipeline.py \
   --csv /path/to/DME_Grades.csv \
   --image-dir /path/to/images \
-  --epochs 30 \
-  --batch-size 8 \
-  --lr 1e-4 \
-  --output dme_standard.weights.h5
+  --config config.yaml \
+  --output-dir pipeline_outputs
 ```
 
----
+## 3) Stage-Selective Runs
 
-## 4. Train with Enhanced QWK-Aware Pipeline
+Stage 1 only:
 
 ```bash
-python train_enhanced.py \
+python main_pipeline.py \
   --csv /path/to/DME_Grades.csv \
   --image-dir /path/to/images \
-  --epochs 50 \
-  --batch-size 8 \
-  --lr 1e-4 \
-  --output-dir results/ \
-  --output dme_enhanced.weights.h5
+  --config config.yaml \
+  --single-stage
 ```
 
----
+Stage 2 only (requires existing Stage 1 artifacts):
 
-## 5. Comprehensive QWK Evaluation
+```bash
+python main_pipeline.py \
+  --csv /path/to/DME_Grades.csv \
+  --image-dir /path/to/images \
+  --config config.yaml \
+  --stage2-only
+```
+
+## 4) Stage 2 Schedule Choice
+
+Long schedule (default):
+
+```bash
+python main_pipeline.py --csv /path/to/DME_Grades.csv --image-dir /path/to/images --long-stage2
+```
+
+Legacy short schedule:
+
+```bash
+python main_pipeline.py --csv /path/to/DME_Grades.csv --image-dir /path/to/images --short-stage2
+```
+
+## 5) Custom Backbone Initialization
+
+EyePACS backbone:
+
+```bash
+python main_pipeline.py \
+  --csv /path/to/DME_Grades.csv \
+  --image-dir /path/to/images \
+  --use-eyepacs /path/to/eyepacs_backbone.weights.h5
+```
+
+Generic custom backbone:
+
+```bash
+python main_pipeline.py \
+  --csv /path/to/DME_Grades.csv \
+  --image-dir /path/to/images \
+  --backbone-weights-path /path/to/custom_backbone.h5
+```
+
+## 6) Evaluation-Only Utility Commands
+
+Comprehensive evaluator (single model weights):
 
 ```bash
 python evaluate_comprehensive.py \
-  --weights dme_enhanced.weights.h5 \
+  --weights /path/to/model_stage1.weights.h5 \
   --csv /path/to/DME_Grades.csv \
   --image-dir /path/to/images \
-  --output-dir results/
+  --output-dir eval_manual
 ```
 
----
-
-## 6. Advanced Dataset Loader with Ordinal Stratification
+Basic evaluator:
 
 ```bash
-# Create mock dataset and inspect split
-python dataset_loader_advanced.py \
-  --mock \
-  --output-dir /tmp/advanced_loader_test
-
-# Run K-fold cross-validation split inspection
-python dataset_loader_advanced.py \
+python evaluate.py \
+  --weights /path/to/model_stage1.weights.h5 \
   --csv /path/to/DME_Grades.csv \
   --image-dir /path/to/images \
-  --kfold 5 \
-  --output-dir /tmp/kfold_splits
+  --output-dir eval_basic
 ```
 
----
-
-## 7. Ablation Study (Compare Model A / B / C)
+## 7) Common Testing Commands
 
 ```bash
-# Quick ablation on mock data (5 epochs per model)
-python ablation_study.py \
-  --mock \
-  --epochs 5 \
-  --output-dir ablation_results/
-
-# Real data ablation
-python ablation_study.py \
-  --csv /path/to/DME_Grades.csv \
-  --image-dir /path/to/images \
-  --epochs 10 \
-  --n-bootstrap 500 \
-  --output-dir ablation_results/
+python test_qwk_calculation.py
+python test_qwk_multioutput.py
+python test_ordinal_weighted_loss.py
+python test_model_collapse_detection.py
+python test_mock_dataset_balance.py
 ```
 
----
-
-## 8. Full End-to-End Pipeline (Recommended)
-
-```bash
-# Using config.yaml
-python main_pipeline.py \
-  --csv /path/to/DME_Grades.csv \
-  --image-dir /path/to/images \
-  --config config.yaml \
-  --output-dir pipeline_outputs/
-
-# Mock data, 2-stage pipeline
-python main_pipeline.py \
-  --mock \
-  --epochs 10 \
-  --config config.yaml \
-  --output-dir /tmp/pipeline_test/
-```
-
-Minimal runnable command:
-
-```bash
-python main_pipeline.py --mock --epochs 5
-```
-
----
-
-## 9. Jupyter Notebook
-
-```bash
-jupyter notebook train_dme_model.ipynb
-```
-
----
-
-## Expected File Structure After Running Pipeline
-
-```
-pipeline_outputs/
-├── model_stage1.weights.h5
-├── model_stage2.weights.h5
-├── pipeline_report.json          ← QWK summary
-├── eval_stage2/
-│   ├── comprehensive_metrics.json
-│   └── comprehensive_dashboard.png
-└── checkpoints/
-    └── stage2/best_qwk.weights.h5
-```
-
----
-
-## Reading the Results
+## 8) Inspecting Results Quickly
 
 ```python
 import json
 
-with open("pipeline_outputs/pipeline_report.json") as f:
+with open("pipeline_outputs/pipeline_report.json", "r") as f:
     report = json.load(f)
 
-print(f"Best QWK: {report['best_qwk']:.4f}")
-print(f"Target met: {report['target_met']}")
+print("Selected stage:", report.get("best_stage"))
+print("Selection mode:", report.get("selection_mode"))
+print("Best DME raw QWK:", report.get("best_qwk"))
+print("Best joint stage:", report.get("best_joint_stage"))
+print("Best joint DR raw QWK:", report.get("best_joint_dr_qwk"))
 ```
 
 ```python
-# Read comprehensive evaluation metrics
-with open("pipeline_outputs/eval_stage2/comprehensive_metrics.json") as f:
-    metrics = json.load(f)
+import json
 
-print(f"QWK:      {metrics['qwk']:.4f}")
-print(f"MAE:      {metrics['mae']:.3f}")
-print(f"Accuracy: {metrics['accuracy']:.4f}")
-print(f"F1 Macro: {metrics['f1_macro']:.4f}")
-print(f"Clinical: {metrics['interpretation']['clinical_recommendation']}")
+with open("pipeline_outputs/eval_stage1/comprehensive_metrics.json", "r") as f:
+    s1 = json.load(f)
+
+with open("pipeline_outputs/eval_stage2/comprehensive_metrics.json", "r") as f:
+    s2 = json.load(f)
+
+print("Stage1 DME raw QWK:", s1["calibration"]["dme"].get("baseline_qwk", s1.get("qwk")))
+print("Stage1 DR raw QWK:", s1["dr"].get("calibration", {}).get("baseline_qwk", s1["dr"].get("dr_qwk")))
+print("Stage2 DME raw QWK:", s2["calibration"]["dme"].get("baseline_qwk", s2.get("qwk")))
+print("Stage2 DR raw QWK:", s2["dr"].get("calibration", {}).get("baseline_qwk", s2["dr"].get("dr_qwk")))
 ```
 
----
+## 9) Recommended Main-Branch Reproduction Recipe
 
-## Configuration Quick Reference
+To compare against the current best main-branch milestone (both QWK > 0.80), keep these fixed:
+- seed
+- split strategy and val_split
+- stage schedule (long vs short)
+- evaluation options (TTA mode, checkpoint ensemble, calibration gates)
 
-Edit `config.yaml` to tune the pipeline:
+Then archive:
+- effective_config.json
+- qwk epoch tables
+- stage-wise comprehensive metrics
+- pipeline_report.json
 
-```yaml
-# Key parameters to adjust:
-batch_size: 8           # Reduce to 4 if OOM
-stage1:
-  epochs: 30            # Increase for better QWK
-  learning_rate: 1.0e-4
+## 10) Expected Output Tree
 
-stage2:
-  epochs: 20
-  learning_rate: 5.0e-5  # Always lower than stage1
-
-# QWKCallback behavior:
-max_batches: null        # null = full validation set (recommended)
-# max_batches: 10         # optional approximation for very large val sets
+```text
+pipeline_outputs/
+|-- effective_config.json
+|-- model_stage1.weights.h5
+|-- model_stage2.weights.h5
+|-- history_stage1.json
+|-- history_stage2.json
+|-- qwk_epoch_table_stage1.csv
+|-- qwk_epoch_table_stage2.csv
+|-- eval_stage1/
+|   |-- comprehensive_metrics.json
+|   `-- dr_metrics.json
+|-- eval_stage2/
+|   |-- comprehensive_metrics.json
+|   `-- dr_metrics.json
+`-- pipeline_report.json
 ```

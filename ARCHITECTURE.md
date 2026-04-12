@@ -1,180 +1,125 @@
-# DR-ASPP-DRN Architecture
+# DR-ASPP Multi-Task Architecture (Current Main Branch)
 
-## Overview
+This document describes the implemented model used by the production pipeline.
 
-The **DR-ASPP-DRN** (Diabetic Retinopathy – Atrous Spatial Pyramid Pooling – Dual-head Retinal Network) is a multi-task deep learning architecture for joint detection of:
+## Task Definitions
 
-- **DR** (Diabetic Retinopathy) severity – continuous regression output (0–4 scale)
-- **DME** (Diabetic Macular Edema) grade – ordinal 4-class classification (No DME / Mild / Moderate / Severe)
+- DME task: 3-class ordinal classification
+  - 0: No DME
+  - 1: Mild
+  - 2: Moderate
+- DR task: 5-class classification
+  - 0: No DR
+  - 1: Mild
+  - 2: Moderate
+  - 3: Severe NPDR
+  - 4: Proliferative DR
 
----
+## High-Level Topology
 
-## Architecture Diagram
-
-```
-Input (512×512×3)
-       │
-       ▼
-┌─────────────────────────────────────┐
-│  ResNet50 Backbone (ImageNet)        │
-│  - 23M parameters                   │
-│  - Output: 16×16×2048 feature map   │
-└────────────────┬────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────┐
-│  ASPP Module (Atrous Spatial        │
-│  Pyramid Pooling)                   │
-│                                     │
-│  Branch 0: 1×1 conv                 │
-│  Branch 1: 3×3 dilation rate 6      │
-│  Branch 2: 3×3 dilation rate 12     │
-│  Branch 3: 3×3 dilation rate 18     │
-│  Branch 4: Global Average Pool      │
-│                                     │
-│  → Concatenate → 1×1 projection     │
-│  Output: 16×16×256                  │
-└──────────┬──────────────────────────┘
-           │
-     ┌─────┴──────┐
-     │            │
-     ▼            ▼
-┌─────────┐  ┌──────────────────┐
-│ DR Head │  │    DME Head      │
-│  GAP    │  │     GAP          │
-│  Dense  │  │  Dense(256,relu) │
-│  256    │  │  Dropout(0.4)    │
-│  Drop   │  │  Dense(4,softmax)│
-│ sigmoid │  │                  │
-│ (0–1)   │  │ [No/Mild/Mod/Sev]│
-└─────────┘  └──────────────────┘
+```text
+Input (512x512x3)
+  -> ResNet50 backbone (truncated at conv4_block6_out)
+  -> ASPP multi-scale context block
+  -> Shared feature tensor
+       |-> DR classification head (softmax 5)
+       `-> DME classification head (softmax 3)
 ```
 
----
+## Backbone
 
-## Key Components
+Implementation details:
+- Base network: keras.applications.ResNet50
+- Endpoint: conv4_block6_out
+- Typical output shape at 512 input: (None, 32, 32, 1024)
+- Supports ImageNet initialization and optional custom backbone weight loading
 
-### 1. ResNet50 Backbone
+Design intent:
+- Keep stronger mid/high-resolution feature maps than very deep terminal blocks
+- Improve lesion localization sensitivity for small retinal findings
 
-| Property      | Value           |
-|---------------|-----------------|
-| Architecture  | ResNet50        |
-| Pre-training  | ImageNet        |
-| Output shape  | 16×16×2048 (at 512×512 input) |
-| Parameters    | ~23.5 M         |
-| Trainable     | Yes (full fine-tuning after warm-up) |
+## ASPP Block
 
-The backbone extracts rich hierarchical features from fundus images. ImageNet pre-training provides strong low-level edge/texture features that transfer well to medical images.
+The ASPP block aggregates context at multiple receptive fields:
+- 1x1 conv branch
+- 3x3 dilated conv branches with dilation rates 6, 12, 18
+- Global pooling branch projected and resized back to feature resolution
+- Branch concatenation followed by projection
 
-### 2. ASPP Module
+Why ASPP matters here:
+- Retinal findings vary significantly in scale
+- Multi-scale context helps both DME and DR grading heads
 
-Atrous Spatial Pyramid Pooling captures multi-scale context by applying dilated convolutions at multiple receptive field sizes:
+## DR Head
 
-| Branch | Operation           | Dilation Rate | Receptive Field |
-|--------|---------------------|---------------|-----------------|
-| 0      | 1×1 Conv            | 1             | Local           |
-| 1      | 3×3 Dilated Conv    | 6             | Medium          |
-| 2      | 3×3 Dilated Conv    | 12            | Large           |
-| 3      | 3×3 Dilated Conv    | 18            | Very large      |
-| 4      | Global Average Pool | Global        | Whole image     |
+Current DR head is classification-based (not regression):
+- GlobalAveragePooling
+- LayerNormalization
+- Residual MLP block with BatchNorm + swish activations
+- Dropout regularization
+- Dense(num_dr_classes, activation="softmax") named dr_output
 
-This is critical for DR/DME detection because lesion sizes vary enormously (microaneurysms vs. hard exudate clusters).
+Training behavior:
+- Optimized with categorical cross-entropy
+- Optional class weighting from training distribution
+- Monitored by val_dr_qwk and DR-specific callbacks/checkpoints
 
-### 3. DR Head (Regression)
+## DME Head
 
-```
-GAP → Dense(256, ReLU) → Dropout(0.4) → Dense(1, sigmoid) → [0, 1]
-```
+Current DME head is 3-class softmax classification:
+- GlobalAveragePooling
+- Configurable head style:
+  - baseline dense projection, or
+  - residual MLP variant (config flag dme_head_residual)
+- Dense(num_dme_classes, activation="softmax") named dme_risk
 
-- Sigmoid output maps to DR severity 0–4 (multiply by 4 for clinical score)
-- Auxiliary task: regularises the shared ASPP representation
-- Loss: Mean Squared Error (MSE) with weight 0.3 in multi-task loss
+Training behavior:
+- Optimized using ordinal-aware weighted cross-entropy when enabled
+- Supports label smoothing and optional soft ordinal weighting mode
+- Primary optimization metric remains val_qwk
 
-### 4. DME Head (Classification)
+## Multi-Task Loss Setup
 
-```
-GAP → Dense(256, ReLU) → Dropout(0.4) → Dense(4, softmax) → [No, Mild, Mod, Severe]
-```
+Model compiles with task-specific losses and weights:
+- DME loss weight: fixed at 1.0
+- DR loss weight: configurable (dr_loss_weight)
 
-- Softmax over 4 ordinal classes
-- Loss: Ordinal-weighted Cross-Entropy (default) or standard Categorical Cross-Entropy
-- Main evaluation metric: **Quadratic Weighted Kappa (QWK)**
+This allows DR influence to be tuned without destabilizing DME optimization.
 
----
+## Stage-Wise Training Semantics
 
-## Training Strategy
+Stage 1:
+- Backbone frozen
+- Train ASPP + both heads
+- Bias initialization for heads from observed train class counts
 
-### Phase 1: Backbone Feature Learning (Stage 1)
-- All layers unfrozen, learning rate `1e-4`
-- Adam optimiser with QWK-aware LR reduction
-- Ordinal-weighted cross-entropy loss
-- Early stopping based on `val_qwk` (patience=5)
+Stage 2:
+- Restore from Stage 1 checkpoint
+- Unfreeze backbone
+- Freeze selected BN layers for stability at small batch sizes
+- Use collapse guard and revert-if-worse safeguards
 
-### Phase 2: Fine-Tuning (Stage 2)
-- Continue from stage 1 best weights
-- Lower learning rate `5e-5`
-- Stricter LR reduction factor (0.3)
-- Targets marginal QWK improvement
+## Checkpointing and Selection
 
----
+The training stack tracks:
+- best_qwk.weights.h5 (DME-oriented)
+- best_dr.weights.h5 (DR-oriented)
+- best_joint.weights.h5 (tiered DME+DR policy)
 
-## Loss Function
+Joint policy uses a threshold ladder with a DME floor to enforce balanced behavior.
 
-### Multi-Task Loss
+## Evaluation-Time Enhancements
 
-```
-L_total = 0.0 × L_DR + 1.0 × L_DME
-```
+Implemented in evaluate_comprehensive.py:
+- Optional geometric TTA:
+  - none, hflip, rot4, dihedral8
+- Optional checkpoint probability ensembling
+- Optional threshold calibration for both DME and DR
 
-During DME fine-tuning, the DR head contribution is zeroed. During joint pre-training:
+These are evaluation-only controls and do not modify training weights.
 
-```
-L_total = 0.3 × MSE(dr_pred, dr_true) + 1.0 × OrdinalCE(dme_pred, dme_true)
-```
+## Practical Notes
 
-### Ordinal Cross-Entropy
-
-The DME loss uses an ordinal penalty matrix to penalise distant misclassifications more:
-
-```
-L_ordinal = CE(y, ŷ) × w_penalty(true_class, pred_class)
-
-where w_penalty(i, j) = 1 + (i-j)² / (K-1)²
-```
-
-This ensures the model learns ordinal structure (Mild→Severe errors penalised more than Mild→Moderate).
-
----
-
-## Quadratic Weighted Kappa (QWK)
-
-The primary evaluation metric:
-
-```
-QWK = 1 - Σ(w_ij × O_ij) / Σ(w_ij × E_ij)
-
-where:
-  w_ij = (i-j)² / (K-1)²   (quadratic penalty)
-  O_ij = observed confusion matrix (normalised)
-  E_ij = expected under random agreement
-```
-
-| QWK Range | Clinical Interpretation |
-|-----------|------------------------|
-| < 0.40    | Poor agreement         |
-| 0.40–0.60 | Fair agreement         |
-| 0.60–0.75 | Moderate agreement     |
-| 0.75–0.80 | Good agreement         |
-| ≥ 0.80    | **Excellent (target)** |
-
----
-
-## Ablation Study Summary
-
-| Model                 | Architecture          | Expected QWK |
-|-----------------------|-----------------------|--------------|
-| Model A (Baseline)    | ResNet50 only         | ~0.73–0.75   |
-| Model B (ASPP only)   | ResNet50 + ASPP       | ~0.76–0.78   |
-| Model C (Full RFA)    | DR-ASPP-DRN (full)    | **≥ 0.80**   |
-
-Each component (ASPP multi-scale context + ordinal loss + multi-task learning) contributes approximately +0.02–0.04 QWK improvement.
+- The codebase now consistently treats DR as classification, not scalar regression.
+- Historical docs mentioning DR sigmoid regression or 4-class DME are outdated.
+- For exact runtime behavior, use effective_config.json emitted per run.
