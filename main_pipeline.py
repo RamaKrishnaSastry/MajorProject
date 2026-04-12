@@ -476,12 +476,20 @@ def stage_training(
     # Evaluate using joint-best checkpoint when available, otherwise best DME-QWK.
     best_qwk_ckpt = os.path.join(checkpoint_dir, "best_qwk.weights.h5")
     best_joint_ckpt = os.path.join(checkpoint_dir, "best_joint.weights.h5")
+    best_dr_ckpt = os.path.join(checkpoint_dir, "best_dr.weights.h5")
     selected_ckpt = None
 
     if bool(train_config.get("joint_checkpoint_enabled", True)) and os.path.exists(best_joint_ckpt):
         selected_ckpt = best_joint_ckpt
     elif os.path.exists(best_qwk_ckpt):
         selected_ckpt = best_qwk_ckpt
+    elif os.path.exists(best_dr_ckpt):
+        selected_ckpt = best_dr_ckpt
+        logger.warning(
+            "No joint/DME-best checkpoint for %s. Falling back to DR-best checkpoint: '%s'.",
+            stage_name,
+            selected_ckpt,
+        )
 
     if selected_ckpt is not None:
         model.load_weights(selected_ckpt)
@@ -492,10 +500,11 @@ def stage_training(
         )
     else:
         logger.warning(
-            "No checkpoint found for %s at '%s' or '%s'; evaluating final epoch weights.",
+            "No checkpoint found for %s at '%s', '%s', or '%s'; evaluating final epoch weights.",
             stage_name,
             best_joint_ckpt,
             best_qwk_ckpt,
+            best_dr_ckpt,
         )
         selected_ckpt = output_weights
 

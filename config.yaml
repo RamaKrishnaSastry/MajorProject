@@ -78,7 +78,7 @@ stage2:
   focal_loss_gamma: 1.5
   dme_label_smoothing: 0.005 # sharpen DME boundary further while keeping stage2 stable
   dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
-  dr_loss_weight: 0.13 # slightly lighter DR coupling to recover DME headroom near the 0.8 target
+  dr_loss_weight: 0.22 # stronger DR coupling in stage2 to reduce DR underfitting while preserving DME floor
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.0 # keep stronger minority-grade pressure for DR classwise stability
   warmup_epochs: 3 # shorter warmup to reduce prolonged low-LR drift in stage2
@@ -147,7 +147,7 @@ evaluation:
   calibrate_dme_thresholds: true
   calibrate_dr_thresholds: true
   calibration_min_qwk_gain: 0.001
-  dr_calibration_max_accuracy_drop: 0.00 # do not apply DR calibration if it reduces DR accuracy
+  dr_calibration_max_accuracy_drop: 0.02 # allow small DR-accuracy trade-off when QWK gain is meaningful
   tta_mode: dihedral8 # none|hflip|rot4|dihedral8 (geometric-only TTA)
   checkpoint_ensemble_enabled: true # average probs from selected/best checkpoints
   checkpoint_ensemble_max_models: 3
