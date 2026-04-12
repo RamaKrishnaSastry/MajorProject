@@ -1,4 +1,4 @@
-"""
+﻿"""
 ablation_study.py - Comprehensive ablation study for DR-ASPP-DRN architecture variants.
 
 Compares 10+ model configurations to validate each component's contribution:
@@ -6,18 +6,18 @@ Compares 10+ model configurations to validate each component's contribution:
 ARCHITECTURAL ABLATIONS:
 - Model A: Baseline ResNet50 only                    (expected QWK ~0.73-0.75)
 - Model B: ResNet50 + ASPP module                    (expected QWK ~0.76-0.78, +0.03-0.05 vs A)
-- Model C: Full DR-ASPP-DRN (Multi-task + ASPP)      (expected QWK ≥0.80, +0.01-0.02 vs B)
+- Model C: Full DR-ASPP-DRN (Multi-task + ASPP)      (expected QWK >= 0.80, +0.01-0.02 vs B)
 
 TWO-STAGE TRAINING ABLATIONS:
 - Model D: Full DR-ASPP-DRN (single-stage training)  (expected QWK ~0.78-0.79)
-- Model E: Full DR-ASPP-DRN (two-stage training)     (expected QWK ≥0.80, +0.01-0.02 vs D)
+- Model E: Full DR-ASPP-DRN (two-stage training)     (expected QWK >= 0.80, +0.01-0.02 vs D)
 
 LOSS FUNCTION STACK ABLATIONS:
 - Model F: Simple categorical cross-entropy only     (expected QWK ~0.75-0.76)
 - Model G: + Class weighting (address imbalance)     (expected QWK ~0.77-0.78, +0.02 vs F)
 - Model H: + Ordinal weighting (respect ordering)    (expected QWK ~0.78-0.79, +0.01 vs G)
 - Model I: + Label smoothing (soften targets)        (expected QWK ~0.79-0.80, +0.01 vs H)
-- Model J: Full stack (all losses combined)          (expected QWK ≥0.80, +0.00-0.01 vs I)
+- Model J: Full stack (all losses combined)          (expected QWK >= 0.80, +0.00-0.01 vs I)
 
 Provides:
 - Quantitative comparison table for all 10 variants
@@ -638,7 +638,7 @@ def _quick_train(
     epochs : int
         Number of training epochs.
     class_weights : dict, optional
-        Per-class weights.
+        Per-class weights (only for models supporting this).
     verbose : int
         Verbosity.
 
@@ -651,14 +651,30 @@ def _quick_train(
             monitor="val_loss", patience=3, restore_best_weights=True
         )
     ]
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=epochs,
-        class_weight=class_weights,
-        callbacks=callbacks,
-        verbose=verbose,
-    )
+    
+    # Try with class_weights first; if it fails, retry without
+    try:
+        history = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=epochs,
+            class_weight=class_weights,
+            callbacks=callbacks,
+            verbose=verbose,
+        )
+    except ValueError as e:
+        if "class_weight" in str(e) and "single output" in str(e):
+            logger.info("Model doesn't support class_weight; retraining without it")
+            history = model.fit(
+                train_ds,
+                validation_data=val_ds,
+                epochs=epochs,
+                callbacks=callbacks,
+                verbose=verbose,
+            )
+        else:
+            raise
+    
     return history
 
 
@@ -742,6 +758,10 @@ def print_ablation_table(results: List[Dict], category: str = "All") -> None:
     category : str
         Category name (e.g., "Architecture", "Loss Function")
     """
+    if not results:
+        logger.warning("No results to display for category: %s", category)
+        return
+    
     print("\n" + "=" * 90)
     print(f"ABLATION STUDY – {category} Variants")
     print("=" * 90)
@@ -946,7 +966,7 @@ def run_ablation_study(
         category_predictions = {}
 
         for name, builder in model_configs[category]:
-            logger.info("\n▶ Training %s …", name)
+            logger.info("\n>> Training %s ...", name)
             t0 = time.time()
 
             try:
@@ -979,11 +999,11 @@ def run_ablation_study(
                 category_predictions[name] = y_pred
                 y_true_global = y_true  # Store for significance tests
                 
-                logger.info("✅ %s → QWK=%.4f | Acc=%.4f | F1=%.4f [%.1fs]",
+                logger.info("[OK] %s → QWK=%.4f | Acc=%.4f | F1=%.4f [%.1fs]",
                           name, ordinal["qwk"], acc, f1, elapsed)
 
             except Exception as e:
-                logger.error("❌ Error training %s: %s", name, str(e))
+                logger.error("[X] Error training %s: %s", name, str(e))
                 continue
 
         all_results[category] = results
@@ -1000,7 +1020,7 @@ def run_ablation_study(
                 pred_j = category_predictions[results[i + 1]["name"]]
                 sig_test = bootstrap_qwk_test(y_true_global, pred_i, pred_j, n_bootstrap=n_bootstrap, seed=seed)
                 
-                significance = "✅ SIGNIFICANT" if sig_test["significant"] else "❌ not significant"
+                significance = "[OK] SIGNIFICANT" if sig_test["significant"] else "[X] not significant"
                 logger.info(
                     "  %s vs %s: Δ=%.4f [%.4f, %.4f] p=%.3f %s",
                     results[i]["name"].split(": ")[0],
@@ -1105,7 +1125,7 @@ def main():
         ablation_mode=args.mode,
     )
 
-    print("\n✅ Ablation Study Complete!")
+    print("\n[OK] Ablation Study Complete!")
     print(json.dumps(results["component_gains"], indent=2))
 
 
@@ -1341,7 +1361,7 @@ def _quick_train(
     epochs : int
         Number of training epochs.
     class_weights : dict, optional
-        Per-class weights.
+        Per-class weights (only for models supporting this).
     verbose : int
         Verbosity.
 
@@ -1354,14 +1374,30 @@ def _quick_train(
             monitor="val_loss", patience=3, restore_best_weights=True
         )
     ]
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=epochs,
-        class_weight=class_weights,
-        callbacks=callbacks,
-        verbose=verbose,
-    )
+    
+    # Try with class_weights first; if it fails, retry without
+    try:
+        history = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=epochs,
+            class_weight=class_weights,
+            callbacks=callbacks,
+            verbose=verbose,
+        )
+    except ValueError as e:
+        if "class_weight" in str(e) and "single output" in str(e):
+            logger.info("Model doesn't support class_weight; retraining without it")
+            history = model.fit(
+                train_ds,
+                validation_data=val_ds,
+                epochs=epochs,
+                callbacks=callbacks,
+                verbose=verbose,
+            )
+        else:
+            raise
+    
     return history
 
 
@@ -1446,6 +1482,10 @@ def print_ablation_table(results: List[Dict]) -> None:
     results : list of dict
         Each element is a per-model result dict.
     """
+    if not results:
+        logger.warning("No results to display for ablation table")
+        return
+    
     print("\n" + "=" * 72)
     print(f"{'Model':<30} {'QWK':>8} {'Acc':>8} {'F1':>8} {'MAE':>8} {'Params':>10}")
     print("-" * 72)
@@ -1582,7 +1622,7 @@ def run_ablation_study(
     all_predictions = {}
 
     for name, builder in model_configs:
-        logger.info("\n%s\nTraining %s …\n%s", "=" * 60, name, "=" * 60)
+        logger.info("\n%s\nTraining %s ...\n%s", "=" * 60, name, "=" * 60)
         t0 = time.time()
 
         if name.startswith("Model C"):
@@ -1615,7 +1655,7 @@ def run_ablation_study(
         logger.info("%s → QWK=%.4f | acc=%.4f | f1=%.4f", name, ordinal["qwk"], acc, f1)
 
     # Statistical significance tests (A vs B, B vs C, A vs C)
-    logger.info("\nRunning bootstrap significance tests …")
+    logger.info("\nRunning bootstrap significance tests ...")
     # Re-use stored predictions and the last collected y_true for significance testing
     names = [r["name"] for r in results]
     sig_tests = {}
@@ -1639,7 +1679,7 @@ def run_ablation_study(
             sig_tests[label]["ci_low"],
             sig_tests[label]["ci_high"],
             sig_tests[label]["p_value"],
-            "✅ significant" if sig_tests[label]["significant"] else "❌ not significant",
+            "[OK] significant" if sig_tests[label]["significant"] else "[X] not significant",
         )
 
     ablation_output = {
@@ -1716,3 +1756,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
