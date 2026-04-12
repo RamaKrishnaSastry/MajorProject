@@ -763,7 +763,7 @@ def print_ablation_table(results: List[Dict], category: str = "All") -> None:
         return
     
     print("\n" + "=" * 90)
-    print(f"ABLATION STUDY – {category} Variants")
+    print(f"ABLATION STUDY ï¿½ {category} Variants")
     print("=" * 90)
     print(f"{'Model':<35} {'QWK':>8} {'Acc':>8} {'F1':>8} {'MAE':>8} {'Gain':>8}")
     print("-" * 90)
@@ -821,7 +821,7 @@ def plot_ablation_comparison(
         axes[0].set_xticks(range(len(names)))
         axes[0].set_xticklabels(names, rotation=15, ha="right", fontsize=10)
         axes[0].set_ylim([0, 1.05])
-        axes[0].set_title(f"{category} Ablation – QWK Scores", fontsize=13, fontweight="bold")
+        axes[0].set_title(f"{category} Ablation ï¿½ QWK Scores", fontsize=13, fontweight="bold")
         axes[0].set_ylabel("QWK Score", fontsize=11)
         axes[0].legend(fontsize=10)
         
@@ -851,7 +851,7 @@ def plot_ablation_comparison(
         axes[1].set_xticks(x_pos)
         axes[1].set_xticklabels(names, rotation=15, ha="right", fontsize=10)
         axes[1].set_ylim([0, 1.05])
-        axes[1].set_title(f"{category} Ablation – QWK vs Accuracy", fontsize=13, fontweight="bold")
+        axes[1].set_title(f"{category} Ablation ï¿½ QWK vs Accuracy", fontsize=13, fontweight="bold")
         axes[1].set_ylabel("Score", fontsize=11)
         axes[1].legend(fontsize=10)
 
