@@ -670,13 +670,14 @@ Model J & ResNet50 + ASPP & 39.2M & $1 \times 10^{-4}$ & 0.5 uniform & Ordinal +
 \end{table}
 
 \textbf{Empirical Results and Collapse Recovery Analysis:}
+\begin{landscape}
 \begin{table}[H]
 \centering
-\small
+\tiny
 \caption{Ablation Study Results: Prediction Collapse Outcomes (413 val. samples)}
-\begin{tabular}{|p{2.2cm}|c|c|c|c|c|}
+\begin{tabular}{|p{1.8cm}|c|c|c|c|c|}
 \hline
-\textbf{Model} & \textbf{Best QWK} & \textbf{Collapse Epoch} & \textbf{Dominant Class} & \textbf{Restart Attempted} & \textbf{Recovery Success} \\
+\textbf{Model} & \textbf{Best QWK} & \textbf{Collapse Epoch} & \textbf{Dominant Class} & \textbf{Restart?} & \textbf{Recovery} \\
 \hline
 \multicolumn{6}{|l|}{\textit{Architecture Variants:}} \\
 Model A: Baseline ResNet50 & 0.0000 & Epoch 2 & 100.0\% class 2 & Yes (1×) & ✗ Failed \\
@@ -699,6 +700,7 @@ Model J: Full loss stack & 0.5428 & Epoch 3 & 54.2\% class 2 & Yes (1×) & ✗ F
 \hline
 \end{tabular}
 \end{table}
+\end{landscape}
 
 \textbf{Critical Finding: No Witness of Recovery from Model Collapse with Generic Hyperparameters}
 
