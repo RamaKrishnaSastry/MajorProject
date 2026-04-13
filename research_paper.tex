@@ -632,7 +632,7 @@ We address the multi-scale dilemma with a purpose-built architecture:
 \textbf{Ablation Model Configurations (with Generic Hyperparameters):}
 \begin{table}[H]
 \centering
-\tiny
+\fontsize{7.5}
 \caption{Detailed Ablation Study: Model Architecture, Parameters, and Hyperparameters}
 \begin{tabular}{|p{1.2cm}|p{2.0cm}|p{1.2cm}|p{1.8cm}|p{2.2cm}|c|}
 \hline
@@ -670,41 +670,41 @@ Model J & ResNet50 + ASPP & 39.2M & $1 \times 10^{-4}$ & 0.5 uniform & Ordinal +
 \end{table}
 
 \textbf{Empirical Results and Collapse Recovery Analysis:}
-\begin{landscape}
+% \begin{landscape}
 \begin{table}[H]
 \centering
-\tiny
+\fontsize{10}
 \caption{Ablation Study Results: Prediction Collapse Outcomes (413 val. samples)}
 \begin{tabular}{|p{1.8cm}|c|c|c|c|c|}
 \hline
 \textbf{Model} & \textbf{Best QWK} & \textbf{Collapse Epoch} & \textbf{Dominant Class} & \textbf{Restart?} & \textbf{Recovery} \\
 \hline
 \multicolumn{6}{|l|}{\textit{Architecture Variants:}} \\
-Model A: Baseline ResNet50 & 0.0000 & Epoch 2 & 100.0\% class 2 & Yes (1×) & ✗ Failed \\
-Model B: ResNet50 + ASPP & 0.1625 & Epoch 3 & 100.0\% class 0 & Yes (1×) & ✗ Failed \\
-Model C: Full DR-ASPP-DRN & 0.0000 & Epoch 2 & 100.0\% class 0 & Yes (1×) & ✗ Failed \\
+Model A: Baseline ResNet50 & 0.0000 & Epoch 2 & 100.0\% class 2 & Yes (1$\times$) & $\times$ Failed \\
+Model B: ResNet50 + ASPP & 0.1625 & Epoch 3 & 100.0\% class 0 & Yes (1$\times$) & $\times$ Failed \\
+Model C: Full DR-ASPP-DRN & 0.0000 & Epoch 2 & 100.0\% class 0 & Yes (1$\times$) & $\times$ Failed \\
 \hline
 \multicolumn{6}{|l|}{\textit{Training Strategy Variants:}} \\
-Model D: Single-stage & 0.0000 & Epoch 2 & 100.0\% class 1 & Yes (1×) & ✗ Failed \\
-Model E: Two-stage (no guard) & 0.0000 & Epoch 3 & 100.0\% class 2 & Yes (1×) & ✗ Failed \\
+Model D: Single-stage & 0.0000 & Epoch 2 & 100.0\% class 1 & Yes (1$\times$) & $\times$ Failed \\
+Model E: Two-stage (no guard) & 0.0000 & Epoch 3 & 100.0\% class 2 & Yes (1$\times$) & $\times$ Failed \\
 \hline
 \multicolumn{6}{|l|}{\textit{Loss Function Variants:}} \\
-Model F: Simple CE & 0.0000 & Epoch 2 & 100.0\% class 2 & Yes (1×) & ✗ Failed \\
-Model G: CE + class weighting & 0.0019 & Epoch 3 & 97.6\% class 2 & Yes (1×) & ✗ Failed \\
-Model H: CE + ordinal weighting & 0.0000 & Epoch 2 & 100.0\% class 2 & Yes (1×) & ✗ Failed \\
-Model I: Ordinal + label smoothing & 0.3662 & Epoch 3 & 51.8\% class 2 & Yes (1×) & ✗ Failed \\
-Model J: Full loss stack & 0.5428 & Epoch 3 & 54.2\% class 2 & Yes (1×) & ✗ Failed \\
+Model F: Simple CE & 0.0000 & Epoch 2 & 100.0\% class 2 & Yes (1$\times$) & $\times$ Failed \\
+Model G: CE + class weighting & 0.0019 & Epoch 3 & 97.6\% class 2 & Yes (1$\times$) & $\times$ Failed \\
+Model H: CE + ordinal weighting & 0.0000 & Epoch 2 & 100.0\% class 2 & Yes (1$\times$) & $\times$ Failed \\
+Model I: Ordinal + label smoothing & 0.3662 & Epoch 3 & 51.8\% class 2 & Yes (1$\times$) & $\times$ Failed \\
+Model J: Full loss stack & 0.5428 & Epoch 3 & 54.2\% class 2 & Yes (1$\times$) & $\times$ Failed \\
 \hline
 \multicolumn{6}{|l|}{\textbf{\textit{Production Model (Tuned Hyperparameters):}}} \\
-\textbf{Our Model (tuned)} & \textbf{≥ 0.80} & \textbf{—} & \textbf{Balanced} & \textbf{N/A} & \textbf{✓ Succeeded} \\
+\textbf{Our Model (tuned)} & \textbf{$\geq$ 0.80} & \textbf{---} & \textbf{Balanced} & \textbf{N/A} & \textbf{$\checkmark$ Succeeded} \\
 \hline
 \end{tabular}
 \end{table}
-\end{landscape}
+% \end{landscape}
 
 \textbf{Critical Finding: No Witness of Recovery from Model Collapse with Generic Hyperparameters}
 
-Analysis of the ablation results reveals a fundamental issue: **all ten baseline model variants failed to recover from prediction collapse, even after restart attempts**. Key observations:
+Analysis of the ablation results reveals a fundamental issue: \textbf{all ten baseline model variants failed to recover from prediction collapse, even after restart attempts}. Key observations:
 
 \begin{enumerate}
     \item \textbf{Collapse is Deterministic, Not Stochastic:} Models A–J collapsed consistently at early epochs (2–3) with generic hyperparameters. Restarting from initial weights only delayed collapse; the underlying mismatch between architecture/hyperparameters and dataset size persisted.
@@ -759,7 +759,7 @@ The full DR-ASPP-DRN design plus its tuned hyperparameters represents a \emph{co
 \end{itemize}
 
 This explains why prior ensemble papers require multiple separate models—attempting to solve small-sample multi-task learning with single standard architectures or generic hyperparameter schemes fails. Our contribution is demonstrating that \emph{systematic co-design of architecture, regularization, and training procedures} enables a \emph{single unified model} to succeed where baselines collapse.
-
+\newpage
 \subsubsection{The Regularization Sweet Spot: 160K Parameters on 413 Validation Samples}
 
 \textbf{Central Insight:} Our ablation reveals a critical finding: stability on small medical imaging datasets requires a precise \emph{regularization sweet spot}—a carefully tuned balance between model capacity, architectural constraints, and training procedures. Our 160k-parameter DR-ASPP-DRN architecture, trained on 413 validation samples (IDRiD), achieves this sweet spot through four synergistic design decisions that act as implicit regularizers:
@@ -770,7 +770,7 @@ This explains why prior ensemble papers require multiple separate models—attem
     \item \textbf{Strategic Dropout Architecture:} Rather than adding dropout uniformly, our design concentrates dropout in task-specific heads (0.5 dropout after ASPP features, 0.3 within MLPs) while avoiding dropout in the backbone and ASPP (which preserve geometric/spatial information). This asymmetric dropout reduces overfitting in task-specific mappings (where spurious patterns form easily) while protecting the shared geometric priors learned via transfer learning. Uniform 0.5 dropout across backbone+ASPP achieves QWK ≈ 0.72 (too high regularization); no dropout in heads causes QWK ≈ 0.67 (collapse-prone); our asymmetric design achieves QWK ≈ 0.81.
     
     \item \textbf{Lightweight Task-Specific Heads (256→5/3 MLPs, $\approx$262K params):} Rather than deep task heads (which would amplify overfitting), each task gets a single 256→256 dense layer followed by softmax (5 classes for DR, 3 for DME). Task-specific MLP parameters: $\approx$262K combined. Stage 1 total trainable (ASPP + heads): $\approx$8.3M. Stage 2 total trainable (full backbone + ASPP + heads): $\approx$16.9M. Deeper heads (256→512→256→5) add 260K+ parameters, raising QWK collapse risk from 0.0 to 0.0 (no improvement); shallower heads (256→5 direct) reduce flexibility, QWK drops to 0.74. The single-layer MLP is the inflection point balancing capacity and regularization.
-    
+    \newpage
     \item \textbf{Frozen BatchNorm + Trainable Convolutions:} ImageNet pre-trained BatchNorm statistics encode natural image priors (mean ≈ 0, std ≈ 1 for normalized RGB). Unfreezing BatchNorm on 413 samples causes severe distribution shift; the model relearns statistics for medical images, breaking transfer learning. Our strategy freezes all BatchNorm layers (preserving ImageNet priors) and only trains convolutions + task heads. This implicit regularization prevents the model from erasing pre-learned normalization—a form of feature-space constraint that reduces effective capacity by an order of magnitude without explicit parameter reduction. Literature on medical imaging transfer learning (e.g., CheXNet, MobileNet adaptations) often overlooks BatchNorm freezing; our ablation shows it's \emph{essential} for datasets ≤ 500 samples. Unfrozen BatchNorm drops QWK to ≈ 0.63 on IDRiD.
 \end{enumerate}
 
@@ -784,7 +784,7 @@ This explains why prior ensemble papers require multiple separate models—attem
     
     \item \textbf{Robustness to Component Removal:} Ablation confirms each regularization layer is necessary—removal of any single component (e.g., BatchNorm freezing, ASPP, res4 truncation, or asymmetric dropout) degrades QWK by ≥ 0.06, often to collapse. The sweet spot is \emph{not} a single dominant factor but a tightly integrated ecosystem.
 \end{itemize}
-
+\newpage
 \textbf{Why This Matters for Medical Imaging:} Small datasets (IDRiD: 516 images, only 413 validation samples) are endemic in medical imaging due to privacy regulations, annotation cost, and disease rarity. Prior work sidesteps this by training separate models per task or accepting single-task excellence. Our finding that a \emph{single unified architecture} can achieve multi-task QWK ≥ 0.80 on 413 samples is significant because it reveals that strategic regularization—applied at architectural, training, and procedural levels—can overcome the fundamental small-sample challenge. This opens a path for practitioners to build practical multi-task medical AI systems without requiring thousands of images per task.
 
 \subsubsection{Contextualizing Achievement: Comparison with Prior Literature}
@@ -796,7 +796,7 @@ To contextualize our contribution, we surveyed prominent DR and DME detection pa
 \textbf{Literature Comparison:}
 \begin{table}[H]
 \centering
-\small
+\fontsize{10}
 \caption{Comparison of DR and DME Detection Models: Dataset Size vs. Performance Trade-offs}
 \begin{tabular}{|p{2.8cm}|p{1.8cm}|c|c|c|c|}
 \hline
@@ -1608,7 +1608,7 @@ Stratification Hierarchy:
     \item Rare combinations (e.g., Proliferative + Moderate DME) appear in both splits
     \item Ensures fair evaluation; model performance unbiased by split artifacts
 \end{itemize}
-
+\newpage
 \textbf{Code Implementation}:
 
 \begin{lstlisting}[language=python]
@@ -1642,7 +1642,7 @@ def stratified_split(df, val_fraction=0.20, seed=42):
     
     return train, val
 \end{lstlisting}
-
+\newpage
 \subsubsection{Advanced Data Loader}
 
 \begin{lstlisting}[language=python]
@@ -1768,7 +1768,7 @@ Contrast Limited Adaptive Histogram Equalization (CLAHE) enhances local contrast
     
     \item Bilinear interpolation on boundaries between tiles to smoothness artifacts
 \end{enumerate}
-
+\newpage
 \textbf{Implementation}:
 
 \begin{lstlisting}[language=python]
@@ -1821,7 +1821,7 @@ def resize_image(image, target_size=(512, 512)):
 
 \begin{lstlisting}[language=python]
 def normalize_image(image):
-    \"\"\"Normalize to [-1, 1] for ResNet50 compatibility.\"\"\"
+    """Normalize to [-1, 1] for ResNet50 compatibility."""
     image = image.astype(np.float32)
     return image / 127.5 - 1.0  # [0, 255] -> [-1, 1]
 \end{lstlisting}
