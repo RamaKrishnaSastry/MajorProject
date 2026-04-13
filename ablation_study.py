@@ -56,6 +56,75 @@ from evaluate import get_predictions, compute_accuracy, compute_f1
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+try:
+    import yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _YAML_AVAILABLE = False
+
+
+def _load_project_hparams() -> Dict[str, float]:
+    """Load project-aligned defaults from config.yaml with safe fallbacks."""
+    defaults = {
+        "learning_rate": 2.0e-5,
+        "dropout_rate": 0.4,
+        "dr_loss_weight": 0.32,
+        "aspp_filters": 256,
+        "dr_head_units": 256,
+        "dme_head_units": 256,
+        "dme_head_residual": True,
+        "early_stopping_patience": 15,
+        "focal_loss_gamma": 1.5,
+        "dme_label_smoothing": 0.02,
+    }
+
+    config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+    if not _YAML_AVAILABLE or not os.path.exists(config_path):
+        return defaults
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+
+        stage1_cfg = cfg.get("stage1", {}) or {}
+        model_cfg = cfg.get("model", {}) or {}
+
+        defaults["learning_rate"] = float(stage1_cfg.get("learning_rate", defaults["learning_rate"]))
+        defaults["dropout_rate"] = float(model_cfg.get("dropout_rate", defaults["dropout_rate"]))
+        defaults["dr_loss_weight"] = float(stage1_cfg.get("dr_loss_weight", defaults["dr_loss_weight"]))
+        defaults["aspp_filters"] = int(model_cfg.get("aspp_filters", defaults["aspp_filters"]))
+        defaults["dr_head_units"] = int(model_cfg.get("dr_head_units", defaults["dr_head_units"]))
+        defaults["dme_head_units"] = int(model_cfg.get("dme_head_units", defaults["dme_head_units"]))
+        defaults["dme_head_residual"] = bool(model_cfg.get("dme_head_residual", defaults["dme_head_residual"]))
+        defaults["early_stopping_patience"] = int(
+            stage1_cfg.get("early_stopping_patience", defaults["early_stopping_patience"])
+        )
+        defaults["focal_loss_gamma"] = float(stage1_cfg.get("focal_loss_gamma", defaults["focal_loss_gamma"]))
+    except Exception as exc:
+        logger.warning("Could not parse config.yaml for hyperparameters: %s", exc)
+
+    return defaults
+
+
+PROJECT_HPARAMS = _load_project_hparams()
+PROJECT_LR = float(PROJECT_HPARAMS["learning_rate"])
+PROJECT_DROPOUT = float(PROJECT_HPARAMS["dropout_rate"])
+PROJECT_DR_LOSS_WEIGHT = float(PROJECT_HPARAMS["dr_loss_weight"])
+PROJECT_ASPP_FILTERS = int(PROJECT_HPARAMS["aspp_filters"])
+PROJECT_DR_HEAD_UNITS = int(PROJECT_HPARAMS["dr_head_units"])
+PROJECT_DME_HEAD_UNITS = int(PROJECT_HPARAMS["dme_head_units"])
+PROJECT_DME_HEAD_RESIDUAL = bool(PROJECT_HPARAMS["dme_head_residual"])
+PROJECT_EARLY_STOPPING_PATIENCE = int(PROJECT_HPARAMS["early_stopping_patience"])
+PROJECT_FOCAL_GAMMA = float(PROJECT_HPARAMS["focal_loss_gamma"])
+
+logger.info(
+    "Ablation hyperparameters aligned to project defaults: lr=%.2e, dropout=%.3f, dr_loss_weight=%.3f, early_stop_patience=%d",
+    PROJECT_LR,
+    PROJECT_DROPOUT,
+    PROJECT_DR_LOSS_WEIGHT,
+    PROJECT_EARLY_STOPPING_PATIENCE,
+)
+
 # Optional plotting
 try:
     import matplotlib
@@ -207,12 +276,12 @@ def build_model_a(
 
     x = layers.GlobalAveragePooling2D(name="gap")(features)
     x = layers.Dense(256, activation="relu", name="fc1")(x)
-    x = layers.Dropout(0.4, name="dropout")(x)
+    x = layers.Dropout(PROJECT_DROPOUT, name="dropout")(x)
     outputs = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
 
     model = keras.Model(inputs=inputs, outputs=outputs, name="ModelA_Baseline")
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss="categorical_crossentropy",
         metrics=[keras.metrics.CategoricalAccuracy(name="accuracy")],
     )
@@ -224,7 +293,7 @@ def build_model_b(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_classes: int = NUM_DME_CLASSES,
     backbone_weights: str = "imagenet",
-    aspp_filters: int = 256,
+    aspp_filters: int = PROJECT_ASPP_FILTERS,
 ) -> keras.Model:
     """Model B: ResNet50 + ASPP module, single DME head.
 
@@ -256,12 +325,12 @@ def build_model_b(
 
     x = layers.GlobalAveragePooling2D(name="dme_gap")(aspp_out)
     x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(0.4, name="dme_dropout")(x)
+    x = layers.Dropout(PROJECT_DROPOUT, name="dme_dropout")(x)
     outputs = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
 
     model = keras.Model(inputs=inputs, outputs=outputs, name="ModelB_ASPP")
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss="categorical_crossentropy",
         metrics=[keras.metrics.CategoricalAccuracy(name="accuracy")],
     )
@@ -273,7 +342,7 @@ def build_model_c(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_dme_classes: int = NUM_DME_CLASSES,
     backbone_weights: str = "imagenet",
-    aspp_filters: int = 256,
+    aspp_filters: int = PROJECT_ASPP_FILTERS,
 ) -> keras.Model:
     """Model C: Full DR-ASPP-DRN (multi-task DR + DME with ASPP).
 
@@ -305,11 +374,15 @@ def build_model_c(
         backbone_weights_path=backbone_weights_path,
         num_dme_classes=num_dme_classes,
         aspp_filters=aspp_filters,
+        dr_head_units=PROJECT_DR_HEAD_UNITS,
+        dme_head_units=PROJECT_DME_HEAD_UNITS,
+        dme_head_residual=PROJECT_DME_HEAD_RESIDUAL,
+        dropout_rate=PROJECT_DROPOUT,
     )
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss={"dr_output": "mse", "dme_risk": "categorical_crossentropy"},
-        loss_weights={"dr_output": 0.3, "dme_risk": 1.0},
+        loss_weights={"dr_output": PROJECT_DR_LOSS_WEIGHT, "dme_risk": 1.0},
         metrics={"dme_risk": [keras.metrics.CategoricalAccuracy(name="accuracy")]},
     )
     logger.info("Model C (Full DR-ASPP-DRN, single-stage): %d params", model.count_params())
@@ -320,7 +393,7 @@ def build_model_d(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_dme_classes: int = NUM_DME_CLASSES,
     backbone_weights: str = "imagenet",
-    aspp_filters: int = 256,
+    aspp_filters: int = PROJECT_ASPP_FILTERS,
 ) -> keras.Model:
     """Model D: Full DR-ASPP-DRN with two-stage training support.
     
@@ -353,11 +426,15 @@ def build_model_d(
         backbone_weights_path=backbone_weights_path,
         num_dme_classes=num_dme_classes,
         aspp_filters=aspp_filters,
+        dr_head_units=PROJECT_DR_HEAD_UNITS,
+        dme_head_units=PROJECT_DME_HEAD_UNITS,
+        dme_head_residual=PROJECT_DME_HEAD_RESIDUAL,
+        dropout_rate=PROJECT_DROPOUT,
     )
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss={"dr_output": "mse", "dme_risk": "categorical_crossentropy"},
-        loss_weights={"dr_output": 0.3, "dme_risk": 1.0},
+        loss_weights={"dr_output": PROJECT_DR_LOSS_WEIGHT, "dme_risk": 1.0},
         metrics={"dme_risk": [keras.metrics.CategoricalAccuracy(name="accuracy")]},
     )
     logger.info("Model D (Full DR-ASPP-DRN, two-stage compatible): %d params", model.count_params())
@@ -368,7 +445,7 @@ def build_model_f(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_classes: int = NUM_DME_CLASSES,
     backbone_weights: str = "imagenet",
-    aspp_filters: int = 256,
+    aspp_filters: int = PROJECT_ASPP_FILTERS,
 ) -> keras.Model:
     """Model F: Full architecture + ASPP with simple CE loss (loss ablation baseline).
 
@@ -399,12 +476,12 @@ def build_model_f(
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
     x = layers.GlobalAveragePooling2D(name="dme_gap")(aspp_out)
     x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(0.4, name="dme_dropout")(x)
+    x = layers.Dropout(PROJECT_DROPOUT, name="dme_dropout")(x)
     outputs = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
 
     model = keras.Model(inputs=inputs, outputs=outputs, name="ModelF_SimpleCE")
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss="categorical_crossentropy",
         metrics=[keras.metrics.CategoricalAccuracy(name="accuracy")],
     )
@@ -416,7 +493,7 @@ def build_model_g(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_classes: int = NUM_DME_CLASSES,
     backbone_weights: str = "imagenet",
-    aspp_filters: int = 256,
+    aspp_filters: int = PROJECT_ASPP_FILTERS,
 ) -> keras.Model:
     """Model G: Model F + class weighting for imbalance.
 
@@ -448,12 +525,12 @@ def build_model_g(
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
     x = layers.GlobalAveragePooling2D(name="dme_gap")(aspp_out)
     x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(0.4, name="dme_dropout")(x)
+    x = layers.Dropout(PROJECT_DROPOUT, name="dme_dropout")(x)
     outputs = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
 
     model = keras.Model(inputs=inputs, outputs=outputs, name="ModelG_ClassWeighting")
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss="categorical_crossentropy",
         metrics=[keras.metrics.CategoricalAccuracy(name="accuracy")],
     )
@@ -465,7 +542,7 @@ def build_model_h(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_classes: int = NUM_DME_CLASSES,
     backbone_weights: str = "imagenet",
-    aspp_filters: int = 256,
+    aspp_filters: int = PROJECT_ASPP_FILTERS,
 ) -> keras.Model:
     """Model H: Model G + ordinal weighting for misclassification penalty.
 
@@ -496,12 +573,12 @@ def build_model_h(
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
     x = layers.GlobalAveragePooling2D(name="dme_gap")(aspp_out)
     x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(0.4, name="dme_dropout")(x)
+    x = layers.Dropout(PROJECT_DROPOUT, name="dme_dropout")(x)
     outputs = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
 
     model = keras.Model(inputs=inputs, outputs=outputs, name="ModelH_OrdinalWeighting")
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss=OrdinalWeightedCrossEntropy(num_classes=num_classes),
         metrics=[keras.metrics.CategoricalAccuracy(name="accuracy")],
     )
@@ -513,7 +590,7 @@ def build_model_i(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_classes: int = NUM_DME_CLASSES,
     backbone_weights: str = "imagenet",
-    aspp_filters: int = 256,
+    aspp_filters: int = PROJECT_ASPP_FILTERS,
 ) -> keras.Model:
     """Model I: Model H + label smoothing to reduce overconfidence.
 
@@ -545,12 +622,12 @@ def build_model_i(
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
     x = layers.GlobalAveragePooling2D(name="dme_gap")(aspp_out)
     x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(0.4, name="dme_dropout")(x)
+    x = layers.Dropout(PROJECT_DROPOUT, name="dme_dropout")(x)
     outputs = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
 
     model = keras.Model(inputs=inputs, outputs=outputs, name="ModelI_LabelSmoothing")
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss=OrdinalWeightedCrossEntropy(num_classes=num_classes),
         metrics=[keras.metrics.CategoricalAccuracy(name="accuracy")],
     )
@@ -562,7 +639,7 @@ def build_model_j(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_classes: int = NUM_DME_CLASSES,
     backbone_weights: str = "imagenet",
-    aspp_filters: int = 256,
+    aspp_filters: int = PROJECT_ASPP_FILTERS,
 ) -> keras.Model:
     """Model J: Full loss stack - Ordinal + Focal loss combined.
 
@@ -593,7 +670,7 @@ def build_model_j(
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
     x = layers.GlobalAveragePooling2D(name="dme_gap")(aspp_out)
     x = layers.Dense(256, activation="relu", name="dme_fc1")(x)
-    x = layers.Dropout(0.4, name="dme_dropout")(x)
+    x = layers.Dropout(PROJECT_DROPOUT, name="dme_dropout")(x)
     outputs = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
 
     model = keras.Model(inputs=inputs, outputs=outputs, name="ModelJ_FullStack")
@@ -601,11 +678,11 @@ def build_model_j(
     # Combine ordinal weighting + focal loss
     def combined_loss(y_true, y_pred):
         ordinal_loss = OrdinalWeightedCrossEntropy(num_classes=num_classes)(y_true, y_pred)
-        focal = FocalLoss(alpha=0.25, gamma=2.0)(y_true, y_pred)
+        focal = FocalLoss(alpha=0.25, gamma=PROJECT_FOCAL_GAMMA)(y_true, y_pred)
         return 0.7 * ordinal_loss + 0.3 * focal
     
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4),
+        optimizer=keras.optimizers.Adam(PROJECT_LR),
         loss=combined_loss,
         metrics=[keras.metrics.CategoricalAccuracy(name="accuracy")],
     )
@@ -790,7 +867,9 @@ def _quick_train(
     """
     callbacks = [
         keras.callbacks.EarlyStopping(
-            monitor="val_loss", patience=3, restore_best_weights=True
+            monitor="val_loss",
+            patience=PROJECT_EARLY_STOPPING_PATIENCE,
+            restore_best_weights=True,
         )
     ]
 
