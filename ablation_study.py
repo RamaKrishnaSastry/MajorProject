@@ -126,6 +126,58 @@ class FocalLoss(keras.losses.Loss):
 # MODEL VARIANT BUILDERS
 # ---------------------------------------------------------------------------
 
+def _resolve_backbone_spec(backbone_weights: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Split backbone spec into (keras_weights_arg, custom_weights_path)."""
+    if backbone_weights in (None, "imagenet"):
+        return backbone_weights, None
+
+    if isinstance(backbone_weights, str):
+        return None, backbone_weights
+
+    return backbone_weights, None
+
+
+def _build_resnet50_backbone(
+    input_shape: Tuple[int, int, int],
+    backbone_weights: Optional[str],
+) -> keras.Model:
+    """Build ResNet50 backbone and safely load optional custom checkpoint."""
+    keras_weights_arg, custom_weights_path = _resolve_backbone_spec(backbone_weights)
+    backbone = keras.applications.ResNet50(
+        include_top=False,
+        weights=keras_weights_arg,
+        input_shape=input_shape,
+    )
+
+    if custom_weights_path is not None:
+        loaded = False
+        try:
+            backbone.load_weights(custom_weights_path, by_name=True, skip_mismatch=True)
+            loaded = True
+        except TypeError:
+            # Some formats do not support by_name; fallback to topological loading.
+            try:
+                backbone.load_weights(custom_weights_path, skip_mismatch=True)
+                loaded = True
+            except Exception as exc:
+                logger.warning(
+                    "Could not fully load custom backbone weights from '%s': %s",
+                    custom_weights_path,
+                    exc,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not fully load custom backbone weights from '%s': %s",
+                custom_weights_path,
+                exc,
+            )
+
+        if loaded:
+            logger.info("Loaded custom backbone weights from '%s' with mismatch tolerance.", custom_weights_path)
+
+    backbone.trainable = True
+    return backbone
+
 def build_model_a(
     input_shape: Tuple[int, int, int] = (512, 512, 3),
     num_classes: int = NUM_DME_CLASSES,
@@ -150,10 +202,7 @@ def build_model_a(
         Compiled Keras model.
     """
     inputs = keras.Input(shape=input_shape, name="input_image")
-    backbone = keras.applications.ResNet50(
-        include_top=False, weights=backbone_weights, input_shape=input_shape
-    )
-    backbone.trainable = True
+    backbone = _build_resnet50_backbone(input_shape, backbone_weights)
     features = backbone(inputs)
 
     x = layers.GlobalAveragePooling2D(name="gap")(features)
@@ -200,10 +249,7 @@ def build_model_b(
     from model import build_aspp
 
     inputs = keras.Input(shape=input_shape, name="input_image")
-    backbone = keras.applications.ResNet50(
-        include_top=False, weights=backbone_weights, input_shape=input_shape
-    )
-    backbone.trainable = True
+    backbone = _build_resnet50_backbone(input_shape, backbone_weights)
     features = backbone(inputs)
 
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
@@ -251,9 +297,12 @@ def build_model_c(
     """
     from model import build_model
 
+    backbone_weights_arg, backbone_weights_path = _resolve_backbone_spec(backbone_weights)
+
     model = build_model(
         input_shape=input_shape,
-        backbone_weights=backbone_weights,
+        backbone_weights=backbone_weights_arg,
+        backbone_weights_path=backbone_weights_path,
         num_dme_classes=num_dme_classes,
         aspp_filters=aspp_filters,
     )
@@ -296,9 +345,12 @@ def build_model_d(
     """
     from model import build_model
 
+    backbone_weights_arg, backbone_weights_path = _resolve_backbone_spec(backbone_weights)
+
     model = build_model(
         input_shape=input_shape,
-        backbone_weights=backbone_weights,
+        backbone_weights=backbone_weights_arg,
+        backbone_weights_path=backbone_weights_path,
         num_dme_classes=num_dme_classes,
         aspp_filters=aspp_filters,
     )
@@ -341,10 +393,7 @@ def build_model_f(
     from model import build_aspp
 
     inputs = keras.Input(shape=input_shape, name="input_image")
-    backbone = keras.applications.ResNet50(
-        include_top=False, weights=backbone_weights, input_shape=input_shape
-    )
-    backbone.trainable = True
+    backbone = _build_resnet50_backbone(input_shape, backbone_weights)
     features = backbone(inputs)
 
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
@@ -393,10 +442,7 @@ def build_model_g(
     from model import build_aspp
 
     inputs = keras.Input(shape=input_shape, name="input_image")
-    backbone = keras.applications.ResNet50(
-        include_top=False, weights=backbone_weights, input_shape=input_shape
-    )
-    backbone.trainable = True
+    backbone = _build_resnet50_backbone(input_shape, backbone_weights)
     features = backbone(inputs)
 
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
@@ -444,10 +490,7 @@ def build_model_h(
     from model import build_aspp
 
     inputs = keras.Input(shape=input_shape, name="input_image")
-    backbone = keras.applications.ResNet50(
-        include_top=False, weights=backbone_weights, input_shape=input_shape
-    )
-    backbone.trainable = True
+    backbone = _build_resnet50_backbone(input_shape, backbone_weights)
     features = backbone(inputs)
 
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
@@ -496,10 +539,7 @@ def build_model_i(
     from model import build_aspp
 
     inputs = keras.Input(shape=input_shape, name="input_image")
-    backbone = keras.applications.ResNet50(
-        include_top=False, weights=backbone_weights, input_shape=input_shape
-    )
-    backbone.trainable = True
+    backbone = _build_resnet50_backbone(input_shape, backbone_weights)
     features = backbone(inputs)
 
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
@@ -547,10 +587,7 @@ def build_model_j(
     from model import build_aspp
 
     inputs = keras.Input(shape=input_shape, name="input_image")
-    backbone = keras.applications.ResNet50(
-        include_top=False, weights=backbone_weights, input_shape=input_shape
-    )
-    backbone.trainable = True
+    backbone = _build_resnet50_backbone(input_shape, backbone_weights)
     features = backbone(inputs)
 
     aspp_out = build_aspp(features, filters=aspp_filters, name_prefix="aspp")
