@@ -32,6 +32,7 @@ import logging
 import os
 import time
 import gc
+import tempfile
 from collections.abc import Mapping
 from typing import Dict, List, Optional, Tuple
 
@@ -76,6 +77,11 @@ def _load_project_hparams() -> Dict[str, float]:
         "early_stopping_patience": 15,
         "focal_loss_gamma": 1.5,
         "dme_label_smoothing": 0.02,
+        "ablation_collapse_guard_enabled": True,
+        "ablation_collapse_guard_ratio": 0.95,
+        "ablation_collapse_guard_patience": 2,
+        "ablation_collapse_guard_start_epoch": 2,
+        "ablation_collapse_guard_restarts": 1,
     }
 
     config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -88,6 +94,7 @@ def _load_project_hparams() -> Dict[str, float]:
 
         stage1_cfg = cfg.get("stage1", {}) or {}
         model_cfg = cfg.get("model", {}) or {}
+        ablation_cfg = cfg.get("ablation", {}) or {}
 
         defaults["learning_rate"] = float(stage1_cfg.get("learning_rate", defaults["learning_rate"]))
         defaults["dropout_rate"] = float(model_cfg.get("dropout_rate", defaults["dropout_rate"]))
@@ -100,6 +107,21 @@ def _load_project_hparams() -> Dict[str, float]:
             stage1_cfg.get("early_stopping_patience", defaults["early_stopping_patience"])
         )
         defaults["focal_loss_gamma"] = float(stage1_cfg.get("focal_loss_gamma", defaults["focal_loss_gamma"]))
+        defaults["ablation_collapse_guard_enabled"] = bool(
+            ablation_cfg.get("collapse_guard_enabled", defaults["ablation_collapse_guard_enabled"])
+        )
+        defaults["ablation_collapse_guard_ratio"] = float(
+            ablation_cfg.get("collapse_guard_ratio", defaults["ablation_collapse_guard_ratio"])
+        )
+        defaults["ablation_collapse_guard_patience"] = int(
+            ablation_cfg.get("collapse_guard_patience", defaults["ablation_collapse_guard_patience"])
+        )
+        defaults["ablation_collapse_guard_start_epoch"] = int(
+            ablation_cfg.get("collapse_guard_start_epoch", defaults["ablation_collapse_guard_start_epoch"])
+        )
+        defaults["ablation_collapse_guard_restarts"] = int(
+            ablation_cfg.get("collapse_guard_restarts", defaults["ablation_collapse_guard_restarts"])
+        )
     except Exception as exc:
         logger.warning("Could not parse config.yaml for hyperparameters: %s", exc)
 
@@ -116,6 +138,11 @@ PROJECT_DME_HEAD_UNITS = int(PROJECT_HPARAMS["dme_head_units"])
 PROJECT_DME_HEAD_RESIDUAL = bool(PROJECT_HPARAMS["dme_head_residual"])
 PROJECT_EARLY_STOPPING_PATIENCE = int(PROJECT_HPARAMS["early_stopping_patience"])
 PROJECT_FOCAL_GAMMA = float(PROJECT_HPARAMS["focal_loss_gamma"])
+PROJECT_ABLATION_COLLAPSE_GUARD_ENABLED = bool(PROJECT_HPARAMS["ablation_collapse_guard_enabled"])
+PROJECT_ABLATION_COLLAPSE_RATIO = float(PROJECT_HPARAMS["ablation_collapse_guard_ratio"])
+PROJECT_ABLATION_COLLAPSE_PATIENCE = int(PROJECT_HPARAMS["ablation_collapse_guard_patience"])
+PROJECT_ABLATION_COLLAPSE_START_EPOCH = int(PROJECT_HPARAMS["ablation_collapse_guard_start_epoch"])
+PROJECT_ABLATION_COLLAPSE_RESTARTS = int(PROJECT_HPARAMS["ablation_collapse_guard_restarts"])
 
 logger.info(
     "Ablation hyperparameters aligned to project defaults: lr=%.2e, dropout=%.3f, dr_loss_weight=%.3f, early_stop_patience=%d",
@@ -123,6 +150,14 @@ logger.info(
     PROJECT_DROPOUT,
     PROJECT_DR_LOSS_WEIGHT,
     PROJECT_EARLY_STOPPING_PATIENCE,
+)
+logger.info(
+    "Ablation collapse guard: enabled=%s ratio=%.2f patience=%d start_epoch=%d restarts=%d",
+    PROJECT_ABLATION_COLLAPSE_GUARD_ENABLED,
+    PROJECT_ABLATION_COLLAPSE_RATIO,
+    PROJECT_ABLATION_COLLAPSE_PATIENCE,
+    PROJECT_ABLATION_COLLAPSE_START_EPOCH,
+    PROJECT_ABLATION_COLLAPSE_RESTARTS,
 )
 
 # Optional plotting
@@ -220,28 +255,41 @@ def _build_resnet50_backbone(
 
     if custom_weights_path is not None:
         loaded = False
+        first_exc = None
+
+        # Best-effort loading order:
+        # 1) by_name + skip_mismatch (works for some legacy formats)
+        # 2) topological + skip_mismatch (Keras 3 safe fallback)
+        # 3) strict topological load
         try:
             backbone.load_weights(custom_weights_path, by_name=True, skip_mismatch=True)
             loaded = True
-        except TypeError:
-            # Some formats do not support by_name; fallback to topological loading.
+        except Exception as exc:
+            first_exc = exc
             try:
                 backbone.load_weights(custom_weights_path, skip_mismatch=True)
                 loaded = True
-            except Exception as exc:
-                logger.warning(
-                    "Could not fully load custom backbone weights from '%s': %s",
+                logger.info(
+                    "Loaded custom backbone weights from '%s' using topological mismatch-tolerant fallback.",
                     custom_weights_path,
-                    exc,
                 )
-        except Exception as exc:
-            logger.warning(
-                "Could not fully load custom backbone weights from '%s': %s",
-                custom_weights_path,
-                exc,
-            )
+            except Exception:
+                try:
+                    backbone.load_weights(custom_weights_path)
+                    loaded = True
+                    logger.info(
+                        "Loaded custom backbone weights from '%s' using strict topological loading.",
+                        custom_weights_path,
+                    )
+                except Exception as final_exc:
+                    logger.warning(
+                        "Could not fully load custom backbone weights from '%s': first attempt failed (%s); final fallback failed (%s)",
+                        custom_weights_path,
+                        first_exc,
+                        final_exc,
+                    )
 
-        if loaded:
+        if loaded and first_exc is None:
             logger.info("Loaded custom backbone weights from '%s' with mismatch tolerance.", custom_weights_path)
 
     backbone.trainable = True
@@ -829,6 +877,67 @@ def _get_predictions_ablation(
     return y_true, y_proba, y_pred
 
 
+class _CollapseDetectedError(RuntimeError):
+    """Raised when prediction collapse persists for guarded epochs."""
+
+
+class _PredictionCollapseGuard(keras.callbacks.Callback):
+    """Stop training early when validation predictions collapse to one class."""
+
+    def __init__(
+        self,
+        val_ds: tf.data.Dataset,
+        num_classes: int,
+        ratio_threshold: float,
+        patience: int,
+        start_epoch: int,
+    ):
+        super().__init__()
+        self.val_ds = val_ds
+        self.num_classes = num_classes
+        self.ratio_threshold = float(ratio_threshold)
+        self.patience = max(1, int(patience))
+        self.start_epoch = max(1, int(start_epoch))
+        self.bad_streak = 0
+
+    def on_epoch_end(self, epoch, logs=None):
+        current_epoch = int(epoch) + 1
+        if current_epoch < self.start_epoch:
+            return
+
+        y_true, _, y_pred = _get_predictions_ablation(
+            self.model,
+            self.val_ds,
+            num_classes=self.num_classes,
+        )
+        collapse_stats = _prediction_collapse_stats(
+            y_true,
+            y_pred,
+            num_classes=self.num_classes,
+            collapse_threshold=self.ratio_threshold,
+        )
+
+        if collapse_stats["collapsed"]:
+            self.bad_streak += 1
+        else:
+            self.bad_streak = 0
+
+        logger.info(
+            "Collapse guard epoch %d: dominant_class=%d ratio=%.2f%% streak=%d/%d",
+            current_epoch,
+            collapse_stats["dominant_pred_class"],
+            100.0 * collapse_stats["dominant_pred_ratio"],
+            self.bad_streak,
+            self.patience,
+        )
+
+        if self.bad_streak >= self.patience:
+            raise _CollapseDetectedError(
+                "Validation prediction collapse persisted for guarded epochs "
+                f"(ratio>={self.ratio_threshold:.2f}, patience={self.patience})."
+            )
+
+
 # ---------------------------------------------------------------------------
 # QUICK TRAINING HELPER
 # ---------------------------------------------------------------------------
@@ -841,6 +950,12 @@ def _quick_train(
     class_weights: Optional[Dict] = None,
     verbose: int = 0,
     oom_batch_fallback: Optional[List[int]] = None,
+    num_classes: int = NUM_DME_CLASSES,
+    collapse_guard_enabled: bool = PROJECT_ABLATION_COLLAPSE_GUARD_ENABLED,
+    collapse_guard_ratio: float = PROJECT_ABLATION_COLLAPSE_RATIO,
+    collapse_guard_patience: int = PROJECT_ABLATION_COLLAPSE_PATIENCE,
+    collapse_guard_start_epoch: int = PROJECT_ABLATION_COLLAPSE_START_EPOCH,
+    collapse_guard_restarts: int = PROJECT_ABLATION_COLLAPSE_RESTARTS,
 ) -> keras.callbacks.History:
     """Train a model variant for a quick ablation experiment.
 
@@ -865,13 +980,25 @@ def _quick_train(
     -------
     keras.callbacks.History
     """
-    callbacks = [
-        keras.callbacks.EarlyStopping(
-            monitor="val_loss",
-            patience=PROJECT_EARLY_STOPPING_PATIENCE,
-            restore_best_weights=True,
-        )
-    ]
+    def build_callbacks() -> List[keras.callbacks.Callback]:
+        callbacks: List[keras.callbacks.Callback] = [
+            keras.callbacks.EarlyStopping(
+                monitor="val_loss",
+                patience=PROJECT_EARLY_STOPPING_PATIENCE,
+                restore_best_weights=True,
+            )
+        ]
+        if collapse_guard_enabled:
+            callbacks.append(
+                _PredictionCollapseGuard(
+                    val_ds=val_ds,
+                    num_classes=num_classes,
+                    ratio_threshold=collapse_guard_ratio,
+                    patience=collapse_guard_patience,
+                    start_epoch=collapse_guard_start_epoch,
+                )
+            )
+        return callbacks
 
     train_for_model = _adapt_dataset_for_model(train_ds, model)
     val_for_model = _adapt_dataset_for_model(val_ds, model)
@@ -885,7 +1012,9 @@ def _quick_train(
         val_for_model = _add_multitask_sample_weights(val_for_model, class_weights)
     
     # Extra safety fallback for environments with stricter class_weight checks.
-    fallback_batch_sizes = oom_batch_fallback or [4, 2, 1]
+    # On some CUDA stacks (including Kaggle), retrying in-process after an OOM
+    # can trigger allocator-level fatal errors. Keep retries opt-in.
+    fallback_batch_sizes = [b for b in (oom_batch_fallback or []) if b and b > 0]
 
     def fit_with_possible_rebatch(train_data, val_data):
         attempts = [None] + fallback_batch_sizes
@@ -906,7 +1035,7 @@ def _quick_train(
                     train_attempt,
                     validation_data=val_attempt,
                     epochs=epochs,
-                    callbacks=callbacks,
+                    callbacks=build_callbacks(),
                     verbose=verbose,
                     **fit_kwargs,
                 )
@@ -920,6 +1049,13 @@ def _quick_train(
                 if not is_oom:
                     raise
                 last_oom_error = ex
+                if attempt_batch is None and not fallback_batch_sizes:
+                    logger.error(
+                        "OOM detected and in-process retry is disabled for safety. "
+                        "Rerun with a smaller --batch-size (recommended) or explicitly pass "
+                        "--oom-fallback-batches if you want to risk retries."
+                    )
+                    break
                 continue
 
         if last_oom_error is not None:
@@ -927,44 +1063,64 @@ def _quick_train(
 
         raise RuntimeError("Training failed before OOM fallback could run")
 
+    initial_weights_path = None
+    max_collapse_restarts = max(0, int(collapse_guard_restarts))
+
+    if collapse_guard_enabled and max_collapse_restarts > 0:
+        with tempfile.NamedTemporaryFile(suffix=".weights.h5", delete=False) as tmp_file:
+            initial_weights_path = tmp_file.name
+        model.save_weights(initial_weights_path)
+
+    def fit_with_collapse_restarts(train_data, val_data):
+        restart_count = 0
+        while True:
+            try:
+                return fit_with_possible_rebatch(train_data, val_data)
+            except _CollapseDetectedError as collapse_err:
+                if initial_weights_path is None or restart_count >= max_collapse_restarts:
+                    raise collapse_err
+                restart_count += 1
+                logger.warning(
+                    "Collapse guard triggered. Restarting from initial weights (%d/%d): %s",
+                    restart_count,
+                    max_collapse_restarts,
+                    collapse_err,
+                )
+                model.load_weights(initial_weights_path)
+
     try:
-        history = fit_with_possible_rebatch(train_for_model, val_for_model)
-    except ValueError as e:
-        if "class_weight" in str(e):
-            logger.info("Model doesn't support class_weight; retraining without it")
-            fit_kwargs.pop("class_weight", None)
-            history = model.fit(
-                train_for_model,
-                validation_data=val_for_model,
-                epochs=epochs,
-                callbacks=callbacks,
-                verbose=verbose,
-            )
-        elif "y_true and y_pred have different structures" in str(e):
-            logger.info("Retrying with forced dme_risk label mapping for single-output model")
-            forced_train = train_ds.map(
-                lambda images, labels: (
-                    images,
-                    labels["dme_risk"] if isinstance(labels, Mapping) else labels,
-                ),
-                num_parallel_calls=tf.data.AUTOTUNE,
-            )
-            forced_val = val_ds.map(
-                lambda images, labels: (
-                    images,
-                    labels["dme_risk"] if isinstance(labels, Mapping) else labels,
-                ),
-                num_parallel_calls=tf.data.AUTOTUNE,
-            )
-            history = model.fit(
-                forced_train,
-                validation_data=forced_val,
-                epochs=epochs,
-                callbacks=callbacks,
-                verbose=verbose,
-            )
-        else:
-            raise
+        try:
+            history = fit_with_collapse_restarts(train_for_model, val_for_model)
+        except ValueError as e:
+            if "class_weight" in str(e):
+                logger.info("Model doesn't support class_weight; retraining without it")
+                fit_kwargs.pop("class_weight", None)
+                history = fit_with_collapse_restarts(train_for_model, val_for_model)
+            elif "y_true and y_pred have different structures" in str(e):
+                logger.info("Retrying with forced dme_risk label mapping for single-output model")
+                forced_train = train_ds.map(
+                    lambda images, labels: (
+                        images,
+                        labels["dme_risk"] if isinstance(labels, Mapping) else labels,
+                    ),
+                    num_parallel_calls=tf.data.AUTOTUNE,
+                )
+                forced_val = val_ds.map(
+                    lambda images, labels: (
+                        images,
+                        labels["dme_risk"] if isinstance(labels, Mapping) else labels,
+                    ),
+                    num_parallel_calls=tf.data.AUTOTUNE,
+                )
+                history = fit_with_collapse_restarts(forced_train, forced_val)
+            else:
+                raise
+    finally:
+        if initial_weights_path is not None:
+            try:
+                os.remove(initial_weights_path)
+            except OSError:
+                pass
     
     return history
 
@@ -1285,7 +1441,8 @@ def run_ablation_study(
 
                 _quick_train(model, train_ds, val_ds, epochs=epochs,
                            class_weights=class_weights, verbose=1,
-                           oom_batch_fallback=oom_batch_fallback)
+                           oom_batch_fallback=oom_batch_fallback,
+                           num_classes=num_classes)
 
                 y_true, y_proba, y_pred = _get_predictions_ablation(model, val_ds, num_classes)
                 ordinal = compute_ordinal_metrics(y_true, y_pred, num_classes)
@@ -1439,8 +1596,8 @@ def main():
     parser.add_argument(
         "--oom-fallback-batches",
         type=str,
-        default="4,2,1",
-        help="Comma-separated batch sizes to retry on OOM, e.g. 4,2,1",
+        default="",
+        help="Comma-separated batch sizes to retry on OOM, e.g. 4,2,1. Leave empty to disable in-process retries (safer on Kaggle).",
     )
     parser.add_argument(
         "--use-backbone",

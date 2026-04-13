@@ -156,6 +156,11 @@ ablation:
   epochs_per_model: 5 # Quick experiments for ablation
   n_bootstrap: 500 # Statistical significance resamples
   output_dir: ablation_results
+  collapse_guard_enabled: true # restart a model if early epochs collapse to one dominant class
+  collapse_guard_ratio: 0.95 # collapse if one class exceeds this prediction ratio
+  collapse_guard_patience: 2 # consecutive collapsed epochs before triggering restart
+  collapse_guard_start_epoch: 2 # ignore the first epoch to avoid warmup false positives
+  collapse_guard_restarts: 1 # number of restart attempts from initial weights
 
 # ============================================================
 # PRESET CONFIGURATIONS
