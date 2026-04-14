@@ -454,7 +454,13 @@ def evaluate_dataset(
     # Extract DR predictions
     if isinstance(predictions, dict):
         # Named outputs from model
-        dr_preds = predictions.get('dr_output') or predictions.get('prediction') or list(predictions.values())[0]
+        dr_preds = None
+        if 'dr_output' in predictions:
+            dr_preds = predictions['dr_output']
+        elif 'prediction' in predictions:
+            dr_preds = predictions['prediction']
+        else:
+            dr_preds = list(predictions.values())[0]
         logger.info(f"Extracted DR predictions from dict keys: {list(predictions.keys())}")
     elif isinstance(predictions, (tuple, list)):
         dr_preds = predictions[0]
