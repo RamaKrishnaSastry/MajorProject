@@ -40,8 +40,8 @@ def load_weights_with_fallback(model, weights_path: str):
     """
     Load weights with better error handling for architecture mismatches.
     
-    Attempts to load weights by layer name first. If that fails, tries
-    loading only backbone weights. Falls back gracefully on full failure.
+    Attempts to load weights. Handles gracefully if architecture
+    doesn't match (bias differences, etc).
     
     Parameters
     ----------
@@ -51,22 +51,13 @@ def load_weights_with_fallback(model, weights_path: str):
         Path to weights file
     """
     try:
-        # First try: Load by name (ignores architecture differences)
-        logger.info(f"Attempting to load weights (by_name=True)...")
-        model.load_weights(weights_path, by_name=True, skip_mismatch=True)
-        logger.info("✅ Weights loaded successfully (by_name mode)")
-        return True
-    except Exception as e:
-        logger.warning(f"Load by_name failed: {e}")
-    
-    try:
-        # Second try: Load with skip_mismatch (more forgiving)
+        # Try loading with skip_mismatch (ignores incompatible layers)
         logger.info(f"Attempting to load weights (skip_mismatch=True)...")
         model.load_weights(weights_path, skip_mismatch=True)
-        logger.info("✅ Weights loaded successfully (skip_mismatch mode)")
+        logger.info("✅ Weights loaded successfully")
         return True
     except Exception as e:
-        logger.warning(f"Load with skip_mismatch failed: {e}")
+        logger.warning(f"Load failed: {e}")
     
     logger.warning(f"Could not load weights from {weights_path}. Using ImageNet backbone + random heads.")
     return False
@@ -457,8 +448,22 @@ def evaluate_dataset(
     # Predict
     predictions = model.predict(images, batch_size=batch_size, verbose=1)
     
+    # Handle multi-output format
+    logger.info(f"Predictions type: {type(predictions)}, shape: {[p.shape if hasattr(p, 'shape') else type(p) for p in (predictions if isinstance(predictions, (tuple, list)) else [predictions])]}")
+    
     # Extract DR predictions (first output)
-    dr_preds = predictions[0] if isinstance(predictions, (tuple, list)) else predictions
+    if isinstance(predictions, (tuple, list)):
+        dr_preds = predictions[0]
+    else:
+        dr_preds = predictions
+    
+    logger.info(f"DR predictions shape: {dr_preds.shape}")
+    
+    # Ensure 2D array [batch_size, num_classes]
+    if len(dr_preds.shape) == 1:
+        logger.warning(f"⚠️  DR predictions is 1D, reshaping...")
+        dr_preds = dr_preds.reshape(-1, 5)  # Assume 5 classes for DR
+    
     dr_pred_classes = np.argmax(dr_preds, axis=1)
     dr_pred_probs = np.max(dr_preds, axis=1)
     
