@@ -33,6 +33,7 @@
     keywordstyle=\color{blue},
     commentstyle=\color{gray},
     stringstyle=\color{red},
+    showstringspaces=false,
     captionpos=b,
     showspaces=false,
     showtabs=false,
@@ -56,13 +57,14 @@
 \date{April 2026}
 
 \maketitle
+\newpage
 
 % ============================================================================
 % ABSTRACT
 % ============================================================================
 \begin{abstract}
 
-\noindent \textbf{Background:} Diabetic retinopathy (DR) and diabetic macular edema (DME) are leading causes of preventable blindness worldwide, affecting over 100 million people globally. Early and accurate automated detection is critical for clinical intervention and community screening programs.
+\noindent \textbf{Background:} Diabetic retinopathy (DR) and diabetic macular edema (DME) are the leading causes of preventable blindness worldwide, affecting more than 100 million people worldwide. Early and accurate automated detection is critical for clinical intervention and community screening programs.
 
 \noindent \textbf{Objective:} This research presents DR-ASPP-DRN, a novel deep learning framework for joint multi-task classification of DR severity (5 classes: 0-4 grades following ICDR Scale) and DME risk (3 classes: 0-2 ordinal levels) from retinal fundus images. The model integrates a Dilated Residual Network (DRN) backbone with Atrous Spatial Pyramid Pooling (ASPP) for comprehensive multi-scale feature extraction and fusion.
 
@@ -1684,8 +1686,8 @@ class AdvancedIDRiDLoader:
         
         # Log distributions
         print(f"Train: {len(train_df)}, Val: {len(val_df)}")
-        print(f"  Train DR dist: {train_df['dr'].value_counts().to_dict()}")
-        print(f"  Val DR dist: {val_df['dr'].value_counts().to_dict()}")
+        print(f"Train DR dist: {train_df['dr'].value_counts().to_dict()}")
+        print(f"Val DR dist: {val_df['dr'].value_counts().to_dict()}")
         
         return train_dataset, val_dataset, train_df, val_df
     
@@ -1891,11 +1893,12 @@ augmentation = ImageDataGenerator(
 \centering
 \fbox{
 \begin{minipage}{0.95\linewidth}
+\vspace{5}
+\begin{center}
 \textbf{DR-ASPP-DRN Complete Pipeline:}
 
 \vspace{5pt}
-\textbf{Input:} Retinal Fundus Image (512×512×3)
-\begin{center}
+\textbf{Input:} Retinal Fundus Image (512×512×3)\\
 $\downarrow$
 \end{center}
 
@@ -1905,23 +1908,25 @@ Truncated at conv4\_block6\_out \\
 Output: (32×32×1024) feature maps
 \\ $\downarrow$
 \end{center}
-
-\textbf{ASPP Multi-Scale Fusion Module}
 \begin{center}
+\textbf{ASPP Multi-Scale Fusion Module}
+
 5 branches with dilations {1, 6, 12, 18, global} \\
 Output: (32×32×256) multi-scale features
 \\ $\downarrow$
 \end{center}
-
-\textbf{Shared Feature Representation}
 \begin{center}
+\textbf{Shared Feature Representation}
+
 (32×32×256)
+\\ \vspace{3pt} \\
+$\Downarrow$
 \end{center}
 
-\begin{minipage}{0.45\linewidth}
-\begin{center}
-$\Downarrow$
+\vspace{3pt}
 
+\begin{minipage}[t]{0.47\linewidth}
+\centering
 \textbf{DR Task Head:}
 \begin{itemize}
     \item Global Avg Pool: (256,)
@@ -1933,17 +1938,14 @@ $\Downarrow$
 
 \textbf{DR Output:} (5,) \\
 Grades 0-4
-\end{center}
 \end{minipage}
 \hfill
-\begin{minipage}{0.45\linewidth}
-\begin{center}
-$\Downarrow$
-
+\begin{minipage}[t]{0.47\linewidth}
+\centering
 \textbf{DME Task Head:}
 \begin{itemize}
     \item Global Avg Pool: (256,)
-    \item [Residual/Dense] MLP
+    \item $[Residual/Dense]$ MLP
     \item Softmax(3)
 \end{itemize}
 
@@ -1951,12 +1953,94 @@ $\Downarrow$
 
 \textbf{DME Output:} (3,) \\
 Grades 0-2
-\end{center}
+\vspace{5}
 \end{minipage}
 
 \end{minipage}
 }
 \end{figure}
+
+\subsection{Task-Specific Classification Heads}
+
+\subsubsection{DR Head (5-Class Classification)}
+
+The DR classification head performs 5-way softmax classification (grades 0-4) using a residual MLP architecture for robust boundary class distinction.
+
+\begin{lstlisting}[language=python]
+def build_dr_head(x, num_classes=5, dropout_rate=0.5, hidden_units=256):
+    """Build DR classification head with residual connections."""
+    x = GlobalAveragePooling2D()(x)
+    x = LayerNormalization()(x)
+    
+    # Residual shortcut path
+    shortcut = Dense(hidden_units, use_bias=False)(x)
+    shortcut = BatchNormalization()(shortcut)
+    
+    # Main transformation path
+    h = Dense(hidden_units, use_bias=False)(x)
+    h = BatchNormalization()(h)
+    h = Activation("swish")(h)
+    h = Dropout(dropout_rate * 0.5)(h)
+    h = Dense(hidden_units, use_bias=False)(h)
+    h = BatchNormalization()(h)
+    
+    # Combine residual paths
+    x = Add()([shortcut, h])
+    x = Activation("swish")(x)
+    x = Dropout(dropout_rate)(x)
+    x = Dense(num_classes, activation="softmax")(x)
+    return x
+\end{lstlisting}
+
+\textbf{Design Rationale}:
+\begin{itemize}
+    \item \textbf{GlobalAveragePooling2D}: Reduces (32×32×256) feature maps to (256,) vector; prevents overfitting by averaging spatial locations
+    \item \textbf{LayerNormalization}: Normalizes feature distribution before MLP; improves training stability and gradient flow
+    \item \textbf{Residual Shortcut}: Dense(256) with BatchNorm allows shallow identity-like function when optimial; aids learning of boundary classes (Mild↔Moderate)
+    \item \textbf{Swish Activation}: Smoother gradient flow than ReLU; reduces vanishing gradient in small MLPs
+    \item \textbf{Dropout Strategy}: Intermediate dropout (0.25 = 0.5×0.5) between main path layers; full dropout (0.5) before output; prevents overfitting without excessive regularization
+    \item \textbf{use\_bias=False + BatchNorm}: BatchNorm absorbs bias terms; reduces redundant parameters; improves numerical stability
+\end{itemize}
+
+\subsubsection{DME Head (3-Class Classification)}
+
+The DME classification head is configurable for either simple dense or residual architecture:
+
+\begin{lstlisting}[language=python]
+def build_dme_head(x, num_classes=3, dropout_rate=0.5, hidden_units=256, 
+                   residual_mlp=False):
+    """Build DME classification head (3 classes: No/Mild/Moderate)."""
+    x = GlobalAveragePooling2D()(x)
+    
+    if residual_mlp:
+        # Residual MLP branch (same structure as DR head)
+        x = LayerNormalization()(x)
+        shortcut = Dense(hidden_units, use_bias=False)(x)
+        
+        h = Dense(hidden_units)(x)
+        h = Activation("swish")(h)
+        h = Dropout(dropout_rate * 0.5)(h)
+        h = Dense(hidden_units)(h)
+        
+        x = Add()([shortcut, h])
+        x = Activation("swish")(x)
+        x = Dropout(dropout_rate)(x)
+    else:
+        # Simple dense branch
+        x = Dense(hidden_units, activation="relu")(x)
+        x = Dropout(dropout_rate)(x)
+    
+    x = Dense(num_classes, activation="softmax")(x)
+    return x
+\end{lstlisting}
+
+\textbf{Configuration Notes}:
+\begin{itemize}
+    \item \textbf{residual\_mlp=False (Default)}: Simple dense pipeline; fewer parameters; suitable for joint training
+    \item \textbf{residual\_mlp=True}: Residual structure matching DR head; improved gradient flow; used in ablation studies
+    \item \textbf{Output}: 3-class softmax (No DME=0, Mild DME=1, Moderate DME=2) with ordinal semantic structure
+    \item \textbf{Ordinal Awareness}: Combined with ordinal-aware loss function (Section 5 details penalties for adjacent vs. distant errors)
+\end{itemize}
 
 \subsection{Backbone: ResNet50 with Strategic Truncation}
 
@@ -2976,27 +3060,27 @@ We believe this work represents a meaningful step toward scalable, equitable DR 
 % ============================================================================
 % REPRODUCIBILITY AND DATA AVAILABILITY
 % ============================================================================
-\section*{Reproducibility Statement}
+% \section*{Reproducibility Statement}
 
-To facilitate reproducibility and enable future research, we provide the following information:
+% To facilitate reproducibility and enable future research, we provide the following information:
 
-\begin{itemize}
-    \item \textbf{Source Code}: The complete training, evaluation, and inference pipeline is available at the official project repository (link to be finalized upon publication).
+% \begin{itemize}
+%     \item \textbf{Source Code}: The complete training, evaluation, and inference pipeline is available at the official project repository (link to be finalized upon publication).
     
-    \item \textbf{Trained Model Weights}: Pre-trained model weights (Stage 1 and Stage 2 checkpoints) are available for download, enabling inference without retraining. Model size: 170 MB.
+%     \item \textbf{Trained Model Weights}: Pre-trained model weights (Stage 1 and Stage 2 checkpoints) are available for download, enabling inference without retraining. Model size: 170 MB.
     
-    \item \textbf{IDRiD Dataset}: Available from the official IDRiD website (https://idrid.grand-challenge.org/) under their dataset license.
+%     \item \textbf{IDRiD Dataset}: Available from the official IDRiD website (https://idrid.grand-challenge.org/) under their dataset license.
     
-    \item \textbf{External Datasets}: APTOS 2019, Messidor, and EyePACS available from their respective Kaggle/official sources.
+%     \item \textbf{External Datasets}: APTOS 2019, Messidor, and EyePACS available from their respective Kaggle/official sources.
     
-    \item \textbf{Hardware and Inference Specifications}: See detailed inference section below (Main Results).
+%     \item \textbf{Hardware and Inference Specifications}: See detailed inference section below (Main Results).
     
-    \item \textbf{Hyperparameters}: All configurations documented in provided config.yaml with comments.
+%     \item \textbf{Hyperparameters}: All configurations documented in provided config.yaml with comments.
     
-    \item \textbf{Contact}: For inquiries, please contact ramakrishna.221ds026@nitk.edu.in.
-\end{itemize}
+%     \item \textbf{Contact}: For inquiries, please contact ramakrishna.221ds026@nitk.edu.in.
+% \end{itemize}
 
-\newpage
+% \newpage
 
 % ============================================================================
 % REFERENCES
