@@ -30,7 +30,7 @@ from sklearn.metrics import confusion_matrix, cohen_kappa_score
 
 # Local imports
 from model import build_model
-from qwk_metrics import quadratic_weighted_kappa
+from qwk_metrics import compute_quadratic_weighted_kappa
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -413,7 +413,7 @@ def evaluate_dataset(
     dr_pred_probs = np.max(dr_preds, axis=1)
     
     # Metrics
-    qwk = quadratic_weighted_kappa(dr_labels_array, dr_pred_classes)
+    qwk = compute_quadratic_weighted_kappa(dr_labels_array, dr_pred_classes)
     accuracy = np.mean(dr_labels_array == dr_pred_classes)
     
     # Confusion matrix
