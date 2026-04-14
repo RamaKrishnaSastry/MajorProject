@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import os
+import warnings
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -29,19 +30,47 @@ import tensorflow as tf
 from sklearn.metrics import confusion_matrix, cohen_kappa_score
 
 # Local imports
-from model import build_model
+from model import build_aspp, build_backbone, build_model
 from qwk_metrics import compute_quadratic_weighted_kappa
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-def load_weights_with_fallback(model, weights_path: str):
+def _snapshot_layer_weights(model, layer_names):
+    snapshots = {}
+    for layer_name in layer_names:
+        try:
+            layer = model.get_layer(layer_name)
+            snapshots[layer_name] = [np.copy(w) for w in layer.get_weights()]
+        except Exception:
+            snapshots[layer_name] = None
+    return snapshots
+
+
+def _did_layer_change(model, layer_name, before_weights, tol: float = 1e-8) -> bool:
+    if before_weights is None:
+        return False
+    try:
+        after_weights = model.get_layer(layer_name).get_weights()
+    except Exception:
+        return False
+    if len(before_weights) != len(after_weights):
+        return False
+    max_delta = 0.0
+    for w_before, w_after in zip(before_weights, after_weights):
+        if w_before.shape != w_after.shape:
+            return False
+        max_delta = max(max_delta, float(np.max(np.abs(w_before - w_after))))
+    return max_delta > tol
+
+
+def load_weights_with_fallback(model, weights_path: str, tracked_layer_names=("dr_output",)):
     """
     Load weights with better error handling for architecture mismatches.
     
-    Attempts to load weights. Handles gracefully if architecture
-    doesn't match (bias differences, etc).
+    Loads compatible layers with ``skip_mismatch=True`` and verifies whether
+    tracked layers (e.g., ``dr_output``) actually changed after loading.
     
     Parameters
     ----------
@@ -50,17 +79,98 @@ def load_weights_with_fallback(model, weights_path: str):
     weights_path : str
         Path to weights file
     """
+    snapshots = _snapshot_layer_weights(model, tracked_layer_names)
+    layer_loaded = {name: False for name in tracked_layer_names}
+
     try:
-        # Try loading with skip_mismatch (ignores incompatible layers)
-        logger.info(f"Attempting to load weights (skip_mismatch=True)...")
-        model.load_weights(weights_path, skip_mismatch=True)
-        logger.info("✅ Weights loaded successfully")
-        return True
+        logger.info("Attempting to load weights (skip_mismatch=True)...")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.load_weights(weights_path, skip_mismatch=True)
+
+        for name in tracked_layer_names:
+            layer_loaded[name] = _did_layer_change(model, name, snapshots.get(name))
+
+        for warning_obj in caught:
+            msg = str(warning_obj.message)
+            if "could not be loaded" in msg or "shape" in msg:
+                logger.warning("Weight load warning: %s", msg.splitlines()[0])
+
+        logger.info("✅ Weights load call completed")
+        logger.info("Tracked layer load status: %s", layer_loaded)
+        return True, layer_loaded
     except Exception as e:
-        logger.warning(f"Load failed: {e}")
-    
-    logger.warning(f"Could not load weights from {weights_path}. Using ImageNet backbone + random heads.")
-    return False
+        logger.warning("Load failed: %s", e)
+        return False, layer_loaded
+
+
+def build_legacy_dr_regression_model(
+    input_shape: Tuple[int, int, int] = (512, 512, 3),
+    backbone_weights: Optional[str] = None,
+    trainable: bool = False,
+):
+    """Build legacy DR regression model for old Stage-2 checkpoints.
+
+    Legacy DR head: GAP -> Dense(256,relu) -> Dropout(0.4) -> Dense(1,relu)
+    with layer names preserved for checkpoint compatibility.
+    """
+    inputs = tf.keras.Input(shape=input_shape, name="input_image")
+    backbone = build_backbone(
+        input_shape=input_shape,
+        weights=backbone_weights,
+        trainable=trainable,
+    )
+    features = backbone(inputs)
+    aspp_features = build_aspp(features, filters=256)
+
+    x = tf.keras.layers.GlobalAveragePooling2D(name="dr_gap")(aspp_features)
+    x = tf.keras.layers.Dense(256, activation="relu", name="dr_fc1")(x)
+    x = tf.keras.layers.Dropout(0.4, name="dr_dropout")(x)
+    dr_output = tf.keras.layers.Dense(1, activation="relu", name="dr_output")(x)
+
+    return tf.keras.Model(
+        inputs=inputs,
+        outputs={"dr_output": dr_output},
+        name="dr_only_legacy_regression",
+    )
+
+
+def build_best_matching_model(weights_path: str):
+    """Build a model variant that best matches the provided checkpoint."""
+    logger.info("Trying current multi-task classification architecture...")
+    current_model = build_model(
+        input_shape=(512, 512, 3),
+        backbone_weights=None,
+        trainable=False,
+    )
+    ok, status = load_weights_with_fallback(current_model, weights_path, tracked_layer_names=("dr_output",))
+    if ok and status.get("dr_output", False):
+        logger.info("Current architecture matched DR head weights.")
+        return current_model, "classification", "current-multitask"
+
+    logger.warning(
+        "Current architecture did not load DR head weights. "
+        "Trying legacy DR regression architecture..."
+    )
+    legacy_model = build_legacy_dr_regression_model(
+        input_shape=(512, 512, 3),
+        backbone_weights=None,
+        trainable=False,
+    )
+    ok_legacy, status_legacy = load_weights_with_fallback(
+        legacy_model,
+        weights_path,
+        tracked_layer_names=("dr_output",),
+    )
+    if ok_legacy and status_legacy.get("dr_output", False):
+        logger.info("Legacy architecture matched DR head weights.")
+        return legacy_model, "regression", "legacy-dr-regression"
+
+    raise RuntimeError(
+        "Could not match DR head layer from checkpoint in either supported architecture "
+        "(current classification or legacy regression). "
+        "Use a checkpoint produced by this codebase/version, or export a compatible DR head."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +507,7 @@ def evaluate_dataset(
     dataset_name: str,
     batch_size: int = 8,
     apply_clahe: bool = True,
+    dr_prediction_mode: str = "classification",
 ) -> Dict:
     """
     Evaluate model on a dataset (DR task only).
@@ -447,35 +558,39 @@ def evaluate_dataset(
     
     # Predict
     predictions = model.predict(images, batch_size=batch_size, verbose=1)
-    
-    # Handle different output formats
-    logger.info(f"Predictions type: {type(predictions)}")
-    
+
     # Extract DR predictions
     if isinstance(predictions, dict):
-        # Named outputs from model
-        dr_preds = None
-        if 'dr_output' in predictions:
-            dr_preds = predictions['dr_output']
-        elif 'prediction' in predictions:
-            dr_preds = predictions['prediction']
-        else:
-            dr_preds = list(predictions.values())[0]
-        logger.info(f"Extracted DR predictions from dict keys: {list(predictions.keys())}")
+        dr_preds = predictions.get("dr_output")
+        if dr_preds is None:
+            dr_preds = next(iter(predictions.values()))
     elif isinstance(predictions, (tuple, list)):
         dr_preds = predictions[0]
     else:
         dr_preds = predictions
-    
-    logger.info(f"DR predictions shape: {dr_preds.shape if hasattr(dr_preds, 'shape') else type(dr_preds)}")
-    
-    # Ensure 2D array [batch_size, num_classes]
-    if len(dr_preds.shape) == 1:
-        logger.warning(f"⚠️  DR predictions is 1D, reshaping...")
-        dr_preds = dr_preds.reshape(-1, 5)  # Assume 5 classes for DR
-    
-    dr_pred_classes = np.argmax(dr_preds, axis=1)
-    dr_pred_probs = np.max(dr_preds, axis=1)
+
+    dr_preds = np.asarray(dr_preds)
+
+    if dr_prediction_mode == "regression" or (dr_preds.ndim == 2 and dr_preds.shape[-1] == 1):
+        dr_scores = dr_preds.reshape(-1)
+        # Legacy models may output [0,1] (sigmoid) or [0,4] (relu).
+        if float(np.nanmax(dr_scores)) <= 1.5:
+            dr_scores = np.clip(dr_scores, 0.0, 1.0) * 4.0
+        else:
+            dr_scores = np.clip(dr_scores, 0.0, 4.0)
+        dr_pred_classes = np.rint(dr_scores).astype(np.int32)
+        dr_pred_classes = np.clip(dr_pred_classes, 0, 4)
+        dr_pred_probs = np.ones_like(dr_scores, dtype=np.float32)
+    else:
+        if dr_preds.ndim == 1:
+            logger.warning("1D DR output detected; interpreting as regression scores.")
+            dr_scores = np.clip(dr_preds, 0.0, 4.0)
+            dr_pred_classes = np.rint(dr_scores).astype(np.int32)
+            dr_pred_classes = np.clip(dr_pred_classes, 0, 4)
+            dr_pred_probs = np.ones_like(dr_scores, dtype=np.float32)
+        else:
+            dr_pred_classes = np.argmax(dr_preds, axis=1)
+            dr_pred_probs = np.max(dr_preds, axis=1)
     
     # Metrics
     qwk = compute_quadratic_weighted_kappa(dr_labels_array, dr_pred_classes)
@@ -499,6 +614,7 @@ def evaluate_dataset(
             "border_cropping": 0.10,
             "normalization": "[-1, 1] for ResNet50"
         },
+        "dr_prediction_mode": dr_prediction_mode,
         "dr_qwk": float(qwk),
         "dr_accuracy": float(accuracy),
         "per_class_accuracy": per_class_acc,
@@ -595,30 +711,38 @@ def main():
     )
     
     args = parser.parse_args()
-    
-    # Build model
-    logger.info("Building model...")
-    model = build_model(
-        input_shape=(512, 512, 3),
-        backbone_weights="imagenet" if not args.use_model else None,
-        trainable=False,  # Inference only
-    )
-    
-    # Load weights if specified
+
+    # Build model with checkpoint-aware architecture selection
+    dr_prediction_mode = "classification"
+    model_variant = "current-multitask"
+
     if args.use_model and Path(args.use_weights).exists():
+        logger.info("Building model for checkpoint compatibility...")
         logger.info(f"Loading weights from {args.use_weights}...")
-        load_weights_with_fallback(model, args.use_weights)
+        model, dr_prediction_mode, model_variant = build_best_matching_model(args.use_weights)
     elif args.use_model:
         logger.warning(f"Weights file not found: {args.use_weights}")
-        logger.warning("Using ImageNet pre-trained weights instead")
+        logger.warning("Using ImageNet pre-trained backbone with current architecture")
+        model = build_model(
+            input_shape=(512, 512, 3),
+            backbone_weights="imagenet",
+            trainable=False,
+        )
     else:
         logger.info("Using random initialization (no pre-trained weights)")
+        model = build_model(
+            input_shape=(512, 512, 3),
+            backbone_weights=None,
+            trainable=False,
+        )
     
     # Evaluate datasets
     all_results = {
         "model_info": {
             "use_pretrained": args.use_model,
             "weights_path": args.use_weights if args.use_model else None,
+            "model_variant": model_variant,
+            "dr_prediction_mode": dr_prediction_mode,
         },
         "preprocessing": {
             "clahe_enabled": not args.disable_clahe,
@@ -631,75 +755,39 @@ def main():
     
     # MESSIDOR
     if args.messidor_images and args.messidor_csv:
-        messidor_img_path = Path(args.messidor_images)
-        messidor_csv_path = Path(args.messidor_csv)
-        if not messidor_img_path.exists():
-            logger.error(f"❌ MESSIDOR images path not found: {messidor_img_path}")
-        elif not messidor_csv_path.exists():
-            logger.error(f"❌ MESSIDOR CSV path not found: {messidor_csv_path}")
-        else:
+        if Path(args.messidor_images).exists() and Path(args.messidor_csv).exists():
             img_paths, labels = load_messidor_dr_labels(args.messidor_images, args.messidor_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
                     model, img_paths, labels, "MESSIDOR", args.batch_size, 
-                    apply_clahe=not args.disable_clahe
+                    apply_clahe=not args.disable_clahe,
+                    dr_prediction_mode=dr_prediction_mode,
                 )
                 all_results["datasets"]["messidor"] = results
-            else:
-                logger.error(f"❌ MESSIDOR: No valid images/labels loaded")
-    else:
-        if not args.messidor_images:
-            logger.warning("⚠️  MESSIDOR images path not specified (--messidor-images)")
-        if not args.messidor_csv:
-            logger.warning("⚠️  MESSIDOR CSV path not specified (--messidor-csv)")
     
     # EyePACS
     if args.eyepacs_images and args.eyepacs_csv:
-        eyepacs_img_path = Path(args.eyepacs_images)
-        eyepacs_csv_path = Path(args.eyepacs_csv)
-        if not eyepacs_img_path.exists():
-            logger.error(f"❌ EyePACS images path not found: {eyepacs_img_path}")
-        elif not eyepacs_csv_path.exists():
-            logger.error(f"❌ EyePACS CSV path not found: {eyepacs_csv_path}")
-        else:
+        if Path(args.eyepacs_images).exists() and Path(args.eyepacs_csv).exists():
             img_paths, labels = load_eyepacs_dr_labels(args.eyepacs_images, args.eyepacs_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
                     model, img_paths, labels, "EyePACS", args.batch_size,
-                    apply_clahe=not args.disable_clahe
+                    apply_clahe=not args.disable_clahe,
+                    dr_prediction_mode=dr_prediction_mode,
                 )
                 all_results["datasets"]["eyepacs"] = results
-            else:
-                logger.error(f"❌ EyePACS: No valid images/labels loaded")
-    else:
-        if not args.eyepacs_images:
-            logger.warning("⚠️  EyePACS images path not specified (--eyepacs-images)")
-        if not args.eyepacs_csv:
-            logger.warning("⚠️  EyePACS CSV path not specified (--eyepacs-csv)")
     
     # APTOS 2019
     if args.aptos_images and args.aptos_csv:
-        aptos_img_path = Path(args.aptos_images)
-        aptos_csv_path = Path(args.aptos_csv)
-        if not aptos_img_path.exists():
-            logger.error(f"❌ APTOS images path not found: {aptos_img_path}")
-        elif not aptos_csv_path.exists():
-            logger.error(f"❌ APTOS CSV path not found: {aptos_csv_path}")
-        else:
+        if Path(args.aptos_images).exists() and Path(args.aptos_csv).exists():
             img_paths, labels = load_aptos_dr_labels(args.aptos_images, args.aptos_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
                     model, img_paths, labels, "APTOS 2019", args.batch_size,
-                    apply_clahe=not args.disable_clahe
+                    apply_clahe=not args.disable_clahe,
+                    dr_prediction_mode=dr_prediction_mode,
                 )
                 all_results["datasets"]["aptos"] = results
-            else:
-                logger.error(f"❌ APTOS: No valid images/labels loaded")
-    else:
-        if not args.aptos_images:
-            logger.warning("⚠️  APTOS images path not specified (--aptos-images)")
-        if not args.aptos_csv:
-            logger.warning("⚠️  APTOS CSV path not specified (--aptos-csv)")
     
     # Save results
     if all_results["datasets"]:
