@@ -1,0 +1,110 @@
+# config_mixed_eyepacs.yaml - Configuration for mixed IDRiD + EyePACS training
+#
+# Purpose:
+#   Train DR backbone on combined IDRiD (516 images) + EyePACS (88K images) dataset
+#   for improved generalization to external datasets (Messidor, APTOS, etc.).
+#
+#   Stage 1: IDRiD + EyePACS combined for DR-only training (5-class softmax)
+#   Stage 2: IDRiD only for DME fine-tuning (3-class softmax)
+#
+# Key differences from standard config.yaml:
+#   - DR training gets 88K+ images (EyePACS) instead of just 516 (IDRiD)
+#   - DME training still on clean IDRiD labels only (Stage 2)
+#   - Slightly higher learning rates in Stage 1 (more data to exploit)
+#   - More aggressive early stopping in Stage 1 (larger dataset stabilizes faster)
+
+# ============================================================
+# GLOBAL SETTINGS
+# ============================================================
+seed: 42
+long_stage2_mode: true
+input_shape: [512, 512, 3]
+num_dme_classes: 3       # 0=No DME, 1=Mild, 2=Moderate
+num_dr_classes: 5        # 0-4: No DR to Proliferative
+output_dir: pipeline_outputs/mixed_eyepacs
+checkpoint_dir: pipeline_outputs/mixed_eyepacs/checkpoints
+
+# ============================================================
+# DATA LOADING
+# ============================================================
+batch_size: 16           # Larger batch size due to more data
+val_split: 0.20
+augment_train: true
+use_advanced_loader: true
+
+dme_class_weight_clip_ratio: 7.0
+oversample_minority_enabled: true
+oversample_minority_class_id: 1
+oversample_factor: 2.5
+
+medical_importance: true
+ordinal_penalty: true
+
+border_fraction: 0.10
+clip_limit: 2.0
+grid_size: 8
+
+# ============================================================
+# STAGE 1: DR BACKBONE TRAINING (IDRiD + EyePACS Mixed)
+# ============================================================
+stage1:
+  epochs: 50               # 50 epochs (more data, can train longer)
+  learning_rate: 3.0e-5   # Slightly higher LR (larger dataset)
+  early_stopping_patience: 12  # Earlier stopping (larger dataset stabilizes faster)
+  lr_reduce_patience: 6
+  lr_reduce_factor: 0.5
+  min_lr: 1.0e-7
+  ordinal_loss_weighting: true
+  focal_loss_gamma: 1.5
+  dme_label_smoothing: 0.02
+  dme_soft_ordinal_weights: false
+  dr_loss_weight: 0.32    # Equal emphasis on DR (our main task)
+  dr_class_weighting: true
+  dr_class_weight_clip_ratio: 7.5
+  warmup_epochs: 5
+
+# ============================================================
+# STAGE 2: DME FINE-TUNING (IDRiD Only)
+# ============================================================
+stage2:
+  epochs: 40              # Fewer epochs (smaller IDRiD dataset)
+  learning_rate: 2.0e-7   # Very conservative LR for fine-tuning from mixed-trained backbone
+  early_stopping_patience: 20
+  lr_reduce_patience: 8
+  lr_reduce_factor: 0.5
+  min_lr: 1.0e-8
+  ordinal_loss_weighting: true
+  focal_loss_gamma: 1.5
+  dme_label_smoothing: 0.005
+  dme_soft_ordinal_weights: true
+  dr_loss_weight: 0.05    # Minimal DR loss (focus on DME)
+  dr_class_weighting: true
+  dr_class_weight_clip_ratio: 7.5
+  warmup_epochs: 3
+  stage2_freeze_aspp_bn: true
+  stage2_checkpoint_use_stage1_baseline: true
+  collapse_guard_enabled: true
+  collapse_guard_ratio: 0.95
+  collapse_guard_min_abs_qwk: 0.68
+  collapse_guard_patience: 3
+  collapse_guard_hard_drop: 0.20
+  collapse_guard_start_epoch: 1
+  stage2_revert_if_worse: true
+  stage2_min_improvement: 0.003
+
+# ============================================================
+# JOINT SELECTION POLICY
+# ============================================================
+joint_selection:
+  enabled: true
+  thresholds:
+    - [0.70, 0.80]   # Tier 1: DME >= 0.70, DR >= 0.80 (ideal)
+    - [0.72, 0.78]   # Tier 2: Balanced
+    - [0.75, 0.75]   # Tier 3: Balanced higher
+    - [0.70, 0.75]   # Tier 4: DME floor maintained
+    - [0.70, 0.72]   # Tier 5: DR drops slightly
+    - [0.70, 0.70]   # Tier 6: At minimum
+    - [0.68, 0.70]   # Tier 7: Emergency fallback
+  fallback_step: 0.02
+  min_threshold: 0.60
+  dme_floor: 0.70
