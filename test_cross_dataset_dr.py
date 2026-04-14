@@ -78,13 +78,21 @@ def load_messidor_dr_labels(messidor_images_dir: str, messidor_csv: str) -> Tupl
             img_name = str(row.iloc[0]).strip()
             dr_label = int(row.get('Retinopathy grade', row.iloc[1]) if len(row) > 1 else 0)
             
-            # Find image with various extensions
-            for ext in ['.tif', '.TIF', '.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG']:
-                img_path = messidor_path / (img_name + ext)
-                if img_path.exists():
-                    image_paths.append(str(img_path))
-                    dr_labels.append(min(dr_label, 4))  # Cap at 4 for IDRiD compatibility
-                    break
+            # Direct file lookup: check if image exists as-is or with added extension
+            img_path = None
+            if Path(messidor_path / img_name).exists():
+                img_path = messidor_path / img_name
+            else:
+                # Try common extensions
+                for ext in ['.tif', '.TIF', '.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG']:
+                    candidate = messidor_path / (img_name + ext)
+                    if candidate.exists():
+                        img_path = candidate
+                        break
+            
+            if img_path:
+                image_paths.append(str(img_path))
+                dr_labels.append(min(dr_label, 4))  # Cap at 4 for IDRiD compatibility
     except Exception as e:
         logger.warning(f"Error loading MESSIDOR annotations from {csv_path}: {e}")
     
@@ -138,18 +146,21 @@ def load_eyepacs_dr_labels(eyepacs_images_dir: str, eyepacs_csv: str) -> Tuple[l
             img_name = str(row[image_col]).strip()
             dr_label = int(row[label_col])
             
-            # Find image file with various extensions
-            img_found = False
-            for ext in ['.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG']:
-                img_path = images_path / (img_name + ext)
-                if img_path.exists():
-                    image_paths.append(str(img_path))
-                    dr_labels.append(min(dr_label, 4))
-                    img_found = True
-                    break
+            # Direct file lookup: check if image exists as-is or with added extension
+            img_path = None
+            if Path(images_path / img_name).exists():
+                img_path = images_path / img_name
+            else:
+                # Try common extensions
+                for ext in ['.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG']:
+                    candidate = images_path / (img_name + ext)
+                    if candidate.exists():
+                        img_path = candidate
+                        break
             
-            if not img_found:
-                logger.debug(f"Image not found: {img_name}")
+            if img_path:
+                image_paths.append(str(img_path))
+                dr_labels.append(min(dr_label, 4))
     
     except Exception as e:
         logger.warning(f"Error loading EyePACS annotations from {csv_path}: {e}")
@@ -193,18 +204,21 @@ def load_aptos_dr_labels(aptos_images_dir: str, aptos_csv: str) -> Tuple[list, l
             img_name = str(row.iloc[0]).strip()
             dr_label = int(row.iloc[1])
             
-            # Find image with various extensions
-            img_found = False
-            for ext in ['.png', '.jpg', '.jpeg']:
-                img_path = images_path / (img_name + ext)
-                if img_path.exists():
-                    image_paths.append(str(img_path))
-                    dr_labels.append(min(dr_label, 4))
-                    img_found = True
-                    break
+            # Direct file lookup: check if image exists as-is or with added extension
+            img_path = None
+            if Path(images_path / img_name).exists():
+                img_path = images_path / img_name
+            else:
+                # Try common extensions
+                for ext in ['.png', '.jpg', '.jpeg']:
+                    candidate = images_path / (img_name + ext)
+                    if candidate.exists():
+                        img_path = candidate
+                        break
             
-            if not img_found:
-                logger.debug(f"Image not found: {img_name}")
+            if img_path:
+                image_paths.append(str(img_path))
+                dr_labels.append(min(dr_label, 4))
     
     except Exception as e:
         logger.warning(f"Error loading APTOS annotations from {csv_path}: {e}")
@@ -567,13 +581,7 @@ def main():
     
     # MESSIDOR
     if args.messidor_images and args.messidor_csv:
-        messidor_img_path = Path(args.messidor_images)
-        messidor_csv_path = Path(args.messidor_csv)
-        if not messidor_img_path.exists():
-            logger.error(f"❌ MESSIDOR images path not found: {messidor_img_path}")
-        elif not messidor_csv_path.exists():
-            logger.error(f"❌ MESSIDOR CSV path not found: {messidor_csv_path}")
-        else:
+        if Path(args.messidor_images).exists() and Path(args.messidor_csv).exists():
             img_paths, labels = load_messidor_dr_labels(args.messidor_images, args.messidor_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
@@ -581,23 +589,10 @@ def main():
                     apply_clahe=not args.disable_clahe
                 )
                 all_results["datasets"]["messidor"] = results
-            else:
-                logger.error(f"❌ MESSIDOR: No valid images/labels loaded")
-    else:
-        if not args.messidor_images:
-            logger.warning("⚠️  MESSIDOR images path not specified (--messidor-images)")
-        if not args.messidor_csv:
-            logger.warning("⚠️  MESSIDOR CSV path not specified (--messidor-csv)")
     
     # EyePACS
     if args.eyepacs_images and args.eyepacs_csv:
-        eyepacs_img_path = Path(args.eyepacs_images)
-        eyepacs_csv_path = Path(args.eyepacs_csv)
-        if not eyepacs_img_path.exists():
-            logger.error(f"❌ EyePACS images path not found: {eyepacs_img_path}")
-        elif not eyepacs_csv_path.exists():
-            logger.error(f"❌ EyePACS CSV path not found: {eyepacs_csv_path}")
-        else:
+        if Path(args.eyepacs_images).exists() and Path(args.eyepacs_csv).exists():
             img_paths, labels = load_eyepacs_dr_labels(args.eyepacs_images, args.eyepacs_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
@@ -605,23 +600,10 @@ def main():
                     apply_clahe=not args.disable_clahe
                 )
                 all_results["datasets"]["eyepacs"] = results
-            else:
-                logger.error(f"❌ EyePACS: No valid images/labels loaded")
-    else:
-        if not args.eyepacs_images:
-            logger.warning("⚠️  EyePACS images path not specified (--eyepacs-images)")
-        if not args.eyepacs_csv:
-            logger.warning("⚠️  EyePACS CSV path not specified (--eyepacs-csv)")
     
     # APTOS 2019
     if args.aptos_images and args.aptos_csv:
-        aptos_img_path = Path(args.aptos_images)
-        aptos_csv_path = Path(args.aptos_csv)
-        if not aptos_img_path.exists():
-            logger.error(f"❌ APTOS images path not found: {aptos_img_path}")
-        elif not aptos_csv_path.exists():
-            logger.error(f"❌ APTOS CSV path not found: {aptos_csv_path}")
-        else:
+        if Path(args.aptos_images).exists() and Path(args.aptos_csv).exists():
             img_paths, labels = load_aptos_dr_labels(args.aptos_images, args.aptos_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
@@ -629,13 +611,6 @@ def main():
                     apply_clahe=not args.disable_clahe
                 )
                 all_results["datasets"]["aptos"] = results
-            else:
-                logger.error(f"❌ APTOS: No valid images/labels loaded")
-    else:
-        if not args.aptos_images:
-            logger.warning("⚠️  APTOS images path not specified (--aptos-images)")
-        if not args.aptos_csv:
-            logger.warning("⚠️  APTOS CSV path not specified (--aptos-csv)")
     
     # Save results
     if all_results["datasets"]:
