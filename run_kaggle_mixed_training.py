@@ -312,36 +312,74 @@ def main():
         description="Run mixed IDRiD+EyePACS training on Kaggle",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Auto-discover datasets
-  python run_kaggle_mixed_training.py
-  
-  # Custom paths
-  python run_kaggle_mixed_training.py \\
-    --idrid-dataset /kaggle/input/idrid \\
-    --eyepacs-dataset /kaggle/input/eyepacs \\
-    --output-dir /kaggle/working/results
-  
-  # Custom epochs
-  python run_kaggle_mixed_training.py \\
-    --epochs-stage1 50 \\
-    --epochs-stage2 40 \\
-    --batch-size 16
+EXAMPLES:
+
+  1. FASTEST - Direct file paths (no discovery needed):
+     python run_kaggle_mixed_training.py \\
+       --idrid-csv /kaggle/input/idrid/DME_Grades.csv \\
+       --idrid-images /kaggle/input/idrid/A. Training set \\
+       --eyepacs-csv /kaggle/input/eyepacs/trainLabels.csv \\
+       --eyepacs-images /kaggle/input/eyepacs/train
+
+  2. MEDIUM - Auto-discover within dataset roots:
+     python run_kaggle_mixed_training.py \\
+       --idrid-dataset /kaggle/input/idrid \\
+       --eyepacs-dataset /kaggle/input/eyepacs
+
+  3. SIMPLEST - Auto-discover in /kaggle/input/:
+     python run_kaggle_mixed_training.py
+
+  4. With custom hyperparameters:
+     python run_kaggle_mixed_training.py \\
+       --idrid-csv /kaggle/input/idrid/DME_Grades.csv \\
+       --idrid-images /kaggle/input/idrid/A. Training set \\
+       --eyepacs-csv /kaggle/input/eyepacs/trainLabels.csv \\
+       --eyepacs-images /kaggle/input/eyepacs/train \\
+       --epochs-stage1 50 \\
+       --epochs-stage2 40 \\
+       --batch-size 16 \\
+       --list-outputs
         """,
     )
     
-    # Dataset paths
+    # Direct file paths (simplest - no auto-discovery needed)
+    parser.add_argument(
+        "--idrid-csv",
+        type=str,
+        default=None,
+        help="Direct path to IDRiD DME_Grades.csv",
+    )
+    parser.add_argument(
+        "--idrid-images",
+        type=str,
+        default=None,
+        help="Direct path to IDRiD training images directory",
+    )
+    parser.add_argument(
+        "--eyepacs-csv",
+        type=str,
+        default=None,
+        help="Direct path to EyePACS trainLabels.csv",
+    )
+    parser.add_argument(
+        "--eyepacs-images",
+        type=str,
+        default=None,
+        help="Direct path to EyePACS training images directory",
+    )
+    
+    # Alternative: dataset root paths (for auto-discovery within dataset)
     parser.add_argument(
         "--idrid-dataset",
         type=str,
         default=None,
-        help="Path to IDRiD dataset (auto-discovered from /kaggle/input if not provided)",
+        help="Path to IDRiD dataset root (will auto-discover CSVs/images)",
     )
     parser.add_argument(
         "--eyepacs-dataset",
         type=str,
         default=None,
-        help="Path to EyePACS dataset (auto-discovered from /kaggle/input if not provided)",
+        help="Path to EyePACS dataset root (will auto-discover CSVs/images)",
     )
     
     # Output
@@ -390,31 +428,62 @@ Examples:
     args = parser.parse_args()
     
     try:
-        # Step 1: Discover or use provided datasets
-        if args.idrid_dataset and args.eyepacs_dataset:
-            logger.info("Using provided dataset paths")
-            idrid_path = args.idrid_dataset
-            eyepacs_path = args.eyepacs_dataset
+        # Step 1: Get file paths (in priority order)
+        
+        # Option A: Direct paths provided (fastest, no discovery needed)
+        if args.idrid_csv and args.idrid_images and args.eyepacs_csv and args.eyepacs_images:
+            logger.info("Using provided direct file paths")
+            idrid_csv = args.idrid_csv
+            idrid_img_dir = args.idrid_images
+            eyepacs_csv = args.eyepacs_csv
+            eyepacs_img_dir = args.eyepacs_images
+            
+            # Verify paths exist
+            if not os.path.exists(idrid_csv):
+                raise FileNotFoundError(f"IDRiD CSV not found: {idrid_csv}")
+            if not os.path.exists(idrid_img_dir):
+                raise FileNotFoundError(f"IDRiD images not found: {idrid_img_dir}")
+            if not os.path.exists(eyepacs_csv):
+                raise FileNotFoundError(f"EyePACS CSV not found: {eyepacs_csv}")
+            if not os.path.exists(eyepacs_img_dir):
+                raise FileNotFoundError(f"EyePACS images not found: {eyepacs_img_dir}")
+            
+            logger.info(f"✅ IDRiD CSV: {idrid_csv}")
+            logger.info(f"✅ IDRiD Images: {idrid_img_dir}")
+            logger.info(f"✅ EyePACS CSV: {eyepacs_csv}")
+            logger.info(f"✅ EyePACS Images: {eyepacs_img_dir}")
+        
+        # Option B: Dataset root paths (auto-discover within each)
+        elif args.idrid_dataset and args.eyepacs_dataset:
+            logger.info("Using provided dataset paths (auto-discovering files within)")
+            idrid_csv, idrid_img_dir, eyepacs_csv, eyepacs_img_dir = locate_files(args.idrid_dataset, args.eyepacs_dataset)
+        
+        # Option C: Auto-discover in /kaggle/input/
         else:
-            logger.info("Auto-discovering datasets...")
+            logger.info("Auto-discovering datasets in /kaggle/input/...")
             idrid_path, eyepacs_path = discover_kaggle_datasets()
             
             if not idrid_path or not eyepacs_path:
                 logger.error("Could not auto-discover datasets. Please provide paths:")
-                logger.error("  --idrid-dataset <path>")
-                logger.error("  --eyepacs-dataset <path>")
+                logger.error("\nAuto-discover option:")
+                logger.error("  --idrid-dataset /path/to/idrid")
+                logger.error("  --eyepacs-dataset /path/to/eyepacs")
+                logger.error("\nDirect paths option (faster):")
+                logger.error("  --idrid-csv /path/to/DME_Grades.csv")
+                logger.error("  --idrid-images /path/to/images")
+                logger.error("  --eyepacs-csv /path/to/trainLabels.csv")
+                logger.error("  --eyepacs-images /path/to/images")
                 sys.exit(1)
+            
+            idrid_csv, idrid_img_dir, eyepacs_csv, eyepacs_img_dir = locate_files(idrid_path, eyepacs_path)
         
-        # Step 2: Locate files
-        idrid_csv, idrid_img_dir, eyepacs_csv, eyepacs_img_dir = locate_files(idrid_path, eyepacs_path)
-        
-        # Step 3: Create output directory
+        # Step 2: Create output directory
         os.makedirs(args.output_dir, exist_ok=True)
         
-        # Step 4: Create config
+        # Step 3: Create config
         config_path = create_config(args)
         
-        # Step 5: Run training
+        # Step 4: Run training
         result = run_training(args, idrid_csv, idrid_img_dir, eyepacs_csv, eyepacs_img_dir, config_path)
         
         sys.exit(0)
