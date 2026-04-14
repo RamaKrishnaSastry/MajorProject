@@ -631,7 +631,13 @@ def main():
     
     # MESSIDOR
     if args.messidor_images and args.messidor_csv:
-        if Path(args.messidor_images).exists() and Path(args.messidor_csv).exists():
+        messidor_img_path = Path(args.messidor_images)
+        messidor_csv_path = Path(args.messidor_csv)
+        if not messidor_img_path.exists():
+            logger.error(f"❌ MESSIDOR images path not found: {messidor_img_path}")
+        elif not messidor_csv_path.exists():
+            logger.error(f"❌ MESSIDOR CSV path not found: {messidor_csv_path}")
+        else:
             img_paths, labels = load_messidor_dr_labels(args.messidor_images, args.messidor_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
@@ -639,10 +645,23 @@ def main():
                     apply_clahe=not args.disable_clahe
                 )
                 all_results["datasets"]["messidor"] = results
+            else:
+                logger.error(f"❌ MESSIDOR: No valid images/labels loaded")
+    else:
+        if not args.messidor_images:
+            logger.warning("⚠️  MESSIDOR images path not specified (--messidor-images)")
+        if not args.messidor_csv:
+            logger.warning("⚠️  MESSIDOR CSV path not specified (--messidor-csv)")
     
     # EyePACS
     if args.eyepacs_images and args.eyepacs_csv:
-        if Path(args.eyepacs_images).exists() and Path(args.eyepacs_csv).exists():
+        eyepacs_img_path = Path(args.eyepacs_images)
+        eyepacs_csv_path = Path(args.eyepacs_csv)
+        if not eyepacs_img_path.exists():
+            logger.error(f"❌ EyePACS images path not found: {eyepacs_img_path}")
+        elif not eyepacs_csv_path.exists():
+            logger.error(f"❌ EyePACS CSV path not found: {eyepacs_csv_path}")
+        else:
             img_paths, labels = load_eyepacs_dr_labels(args.eyepacs_images, args.eyepacs_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
@@ -650,10 +669,23 @@ def main():
                     apply_clahe=not args.disable_clahe
                 )
                 all_results["datasets"]["eyepacs"] = results
+            else:
+                logger.error(f"❌ EyePACS: No valid images/labels loaded")
+    else:
+        if not args.eyepacs_images:
+            logger.warning("⚠️  EyePACS images path not specified (--eyepacs-images)")
+        if not args.eyepacs_csv:
+            logger.warning("⚠️  EyePACS CSV path not specified (--eyepacs-csv)")
     
     # APTOS 2019
     if args.aptos_images and args.aptos_csv:
-        if Path(args.aptos_images).exists() and Path(args.aptos_csv).exists():
+        aptos_img_path = Path(args.aptos_images)
+        aptos_csv_path = Path(args.aptos_csv)
+        if not aptos_img_path.exists():
+            logger.error(f"❌ APTOS images path not found: {aptos_img_path}")
+        elif not aptos_csv_path.exists():
+            logger.error(f"❌ APTOS CSV path not found: {aptos_csv_path}")
+        else:
             img_paths, labels = load_aptos_dr_labels(args.aptos_images, args.aptos_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
@@ -661,6 +693,13 @@ def main():
                     apply_clahe=not args.disable_clahe
                 )
                 all_results["datasets"]["aptos"] = results
+            else:
+                logger.error(f"❌ APTOS: No valid images/labels loaded")
+    else:
+        if not args.aptos_images:
+            logger.warning("⚠️  APTOS images path not specified (--aptos-images)")
+        if not args.aptos_csv:
+            logger.warning("⚠️  APTOS CSV path not specified (--aptos-csv)")
     
     # Save results
     if all_results["datasets"]:
