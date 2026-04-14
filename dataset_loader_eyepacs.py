@@ -393,25 +393,35 @@ def create_mixed_dr_train_val_datasets(
     # Compute DR class weights on training set
     dr_class_weights = compute_dr_class_weights_mixed(train_df["dr_label"].values)
 
-    # Create tf.data pipelines for DR-only task
+    # Create tf.data pipelines for DR-only task (Stage 1)
+    # In Stage 1, we only train on DR, so create dummy DME labels for mixed dataset
+    train_dme_dummy = np.zeros(len(train_df), dtype=np.int32)  # Dummy labels (won't be used)
+    val_dme_dummy = np.zeros(len(val_df), dtype=np.int32)
+    
     preprocess_fn = make_preprocess_fn()
     train_ds = _build_tf_dataset(
-        train_df[["image_path", "dr_label"]].values,
+        image_paths=train_df["image_path"].values,
+        dme_labels=train_dme_dummy,
+        dr_labels=train_df["dr_label"].values,
+        preprocess_fn=preprocess_fn,
         batch_size=batch_size,
         shuffle=True,
         augment=augment_train,
-        preprocess_fn=preprocess_fn,
-        include_dme=False,  # Stage 1 is DR-only
+        cache=False,
+        seed=seed,
     )
 
     preprocess_fn_val = make_preprocess_fn()
     val_ds = _build_tf_dataset(
-        val_df[["image_path", "dr_label"]].values,
+        image_paths=val_df["image_path"].values,
+        dme_labels=val_dme_dummy,
+        dr_labels=val_df["dr_label"].values,
+        preprocess_fn=preprocess_fn_val,
         batch_size=batch_size,
         shuffle=False,
         augment=False,
-        preprocess_fn=preprocess_fn_val,
-        include_dme=False,  # Stage 1 is DR-only
+        cache=False,
+        seed=seed,
     )
 
     logger.info("Mixed dataset pipelines created.")
