@@ -1670,6 +1670,11 @@ def train_enhanced(
 
     model.save_weights(output_weights)
     logger.info("Saved weights to '%s'.", output_weights)
+    
+    # Also save the full model (with architecture) for direct loading
+    model_path = output_weights.replace(".weights.h5", ".model.h5")
+    model.save(model_path)
+    logger.info("✅ Saved full model (with architecture) to '%s'.", model_path)
 
     return model, history.history
 

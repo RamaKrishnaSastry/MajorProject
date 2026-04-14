@@ -357,10 +357,21 @@ def build_legacy_dr_regression_model(
 def build_best_matching_model(weights_path: str):
     """Build a model variant that best matches the provided checkpoint.
     
-    First tries the current production pipeline architecture. If weights
-    load successfully into dr_output layer, returns that. Otherwise tries
-    legacy architecture for backward compatibility.
+    First tries to load a pre-built model file (.model.h5). If not available,
+    tries loading weights into current production pipeline architecture.
+    Finally falls back to legacy architecture for backward compatibility.
     """
+    # Check if pre-built model exists (prefer this over weights-only loading)
+    model_file = weights_path.replace(".weights.h5", ".model.h5")
+    if Path(model_file).exists():
+        try:
+            logger.info(f"Loading pre-built model from {model_file}...")
+            model = keras.models.load_model(model_file)
+            logger.info("✅ Pre-built model loaded successfully.")
+            return model, "classification", "prebuilt-production-model"
+        except Exception as e:
+            logger.warning(f"Could not load pre-built model from {model_file}: {e}")
+    
     logger.info("Building pipeline architecture from weights_path...")
     logger.info(f"Loading weights from {weights_path}...")
     
