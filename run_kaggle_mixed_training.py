@@ -310,6 +310,22 @@ def run_training(args, idrid_csv, idrid_img_dir, eyepacs_csv, eyepacs_img_dir, c
     logger.info(f"  EyePACS Images: {eyepacs_img_dir}")
     logger.info(f"  Config: {config_path}")
     logger.info(f"  Output: {args.output_dir}")
+    
+    # Backbone setup
+    backbone_weights = None
+    if args.use_backbone:
+        if not args.backbone_path:
+            logger.error("❌ --use-backbone requires --backbone-path")
+            sys.exit(1)
+        if not os.path.exists(args.backbone_path):
+            logger.error(f"❌ Backbone file not found: {args.backbone_path}")
+            sys.exit(1)
+        backbone_weights = args.backbone_path
+        logger.info(f"  Backbone: {args.backbone_path}")
+        logger.info(f"  Transfer learning: ENABLED")
+    else:
+        logger.info(f"  Backbone: ImageNet (default)")
+    
     logger.info("="*70 + "\n")
     
     t_start = time.time()
@@ -322,6 +338,7 @@ def run_training(args, idrid_csv, idrid_img_dir, eyepacs_csv, eyepacs_img_dir, c
             eyepacs_csv=eyepacs_csv,
             eyepacs_image_dir=eyepacs_img_dir,
             two_stage=True,
+            backbone_weights_path=backbone_weights,
         )
         
         t_elapsed = (time.time() - t_start) / 3600  # hours
@@ -397,7 +414,18 @@ EXAMPLES:
        --batch-size 8 \\
        --max-eyepacs-samples 20000
 
-  3. DIAGNOSE - Check memory without training:
+  3. WITH BACKBONE TRANSFER - Use pre-trained EyePACS backbone (RECOMMENDED):
+     python run_kaggle_mixed_training.py \\
+       --idrid-csv /kaggle/input/idrid/DME_Grades.csv \\
+       --idrid-images /kaggle/input/idrid/A. Training set \\
+       --eyepacs-csv /kaggle/input/eyepacs/trainLabels.csv \\
+       --eyepacs-images /kaggle/input/eyepacs/train \\
+       --use-backbone \\
+       --backbone-path /kaggle/input/backbone/eyepacs_backbone.weights.h5 \\
+       --epochs-stage1 20 \\
+       --batch-size 12
+
+  4. DIAGNOSE - Check memory without training:
      python run_kaggle_mixed_training.py \\
        --idrid-csv /kaggle/input/idrid/DME_Grades.csv \\
        --idrid-images /kaggle/input/idrid/A. Training set \\
@@ -405,9 +433,18 @@ EXAMPLES:
        --eyepacs-images /kaggle/input/eyepacs/train \\
        --skip-memory-check
 
-  4. AUTO-DISCOVER - Full auto-discovery in /kaggle/input/:
+  5. AUTO-DISCOVER - Full auto-discovery in /kaggle/input/:
      python run_kaggle_mixed_training.py
 
+TRANSFER LEARNING:
+  --use-backbone: Enables pre-trained backbone for faster convergence
+  --backbone-path: Path to .h5 file with backbone weights (e.g., conv4_block6_out)
+  
+  Benefits of using backbone:
+    - Faster Stage 1 convergence (20 epochs vs 40)
+    - Better generalization (weights pre-trained on 88K images)
+    - Should improve external dataset performance
+    
 MEMORY SAFETY:
   - tf.data pipeline streams images (doesn't load all to RAM)
   - Only 'batch_size' images in GPU memory at once
@@ -477,7 +514,7 @@ MEMORY SAFETY:
         "--epochs-stage1",
         type=int,
         default=40,
-        help="Number of epochs for Stage 1 (default: 40)",
+        help="Number of epochs for Stage 1 (default: 40; reduce to 20 if using --use-backbone)",
     )
     parser.add_argument(
         "--epochs-stage2",
@@ -503,6 +540,19 @@ MEMORY SAFETY:
         "--skip-memory-check",
         action="store_true",
         help="Skip memory safety check (use with caution)",
+    )
+    
+    # Transfer learning (backbone initialization)
+    parser.add_argument(
+        "--use-backbone",
+        action="store_true",
+        help="Use pre-trained backbone weights (requires --backbone-path)",
+    )
+    parser.add_argument(
+        "--backbone-path",
+        type=str,
+        default=None,
+        help="Path to pre-trained backbone .h5 file (e.g., eyepacs_backbone.weights.h5)",
     )
     
     # Other options
