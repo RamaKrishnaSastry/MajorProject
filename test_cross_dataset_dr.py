@@ -448,16 +448,20 @@ def evaluate_dataset(
     # Predict
     predictions = model.predict(images, batch_size=batch_size, verbose=1)
     
-    # Handle multi-output format
-    logger.info(f"Predictions type: {type(predictions)}, shape: {[p.shape if hasattr(p, 'shape') else type(p) for p in (predictions if isinstance(predictions, (tuple, list)) else [predictions])]}")
+    # Handle different output formats
+    logger.info(f"Predictions type: {type(predictions)}")
     
-    # Extract DR predictions (first output)
-    if isinstance(predictions, (tuple, list)):
+    # Extract DR predictions
+    if isinstance(predictions, dict):
+        # Named outputs from model
+        dr_preds = predictions.get('dr_output') or predictions.get('prediction') or list(predictions.values())[0]
+        logger.info(f"Extracted DR predictions from dict keys: {list(predictions.keys())}")
+    elif isinstance(predictions, (tuple, list)):
         dr_preds = predictions[0]
     else:
         dr_preds = predictions
     
-    logger.info(f"DR predictions shape: {dr_preds.shape}")
+    logger.info(f"DR predictions shape: {dr_preds.shape if hasattr(dr_preds, 'shape') else type(dr_preds)}")
     
     # Ensure 2D array [batch_size, num_classes]
     if len(dr_preds.shape) == 1:
