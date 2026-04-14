@@ -28,13 +28,232 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.metrics import confusion_matrix, cohen_kappa_score
+from tensorflow import keras
+from tensorflow.keras import layers
 
 # Local imports
-from model import build_aspp, build_backbone, build_model
 from qwk_metrics import compute_quadratic_weighted_kappa
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
+# ---------------------------------------------------------------------------
+# Model Architecture (copied from model.py to ensure exact compatibility)
+# ---------------------------------------------------------------------------
+
+@keras.utils.register_keras_serializable(package="MajorProject")
+class ResizeToMatch(layers.Layer):
+    """Resize the first tensor to match spatial size of a reference tensor."""
+
+    def call(self, inputs):
+        source, reference = inputs
+        target_hw = tf.shape(reference)[1:3]
+        return tf.image.resize(source, target_hw)
+
+    def get_config(self):
+        return super().get_config()
+
+
+def build_backbone(
+    input_shape: Tuple[int, int, int] = (512, 512, 3),
+    weights: str = "imagenet",
+    trainable: bool = True,
+    weights_path: Optional[str] = None,
+) -> keras.Model:
+    """Build a ResNet50 backbone."""
+    try:
+        base = keras.applications.ResNet50(
+            include_top=False,
+            weights=weights,
+            input_shape=input_shape,
+        )
+    except Exception as exc:
+        if weights == "imagenet":
+            logger.warning(
+                "Could not load ImageNet weights (%s). Falling back to random init.",
+                exc,
+            )
+            base = keras.applications.ResNet50(
+                include_top=False,
+                weights=None,
+                input_shape=input_shape,
+            )
+        else:
+            raise
+    base.trainable = trainable
+    output = base.get_layer("conv4_block6_out").output
+    backbone = keras.Model(inputs=base.input, outputs=output, name="resnet50_conv4_backbone")
+    backbone.trainable = trainable
+
+    if weights_path is not None:
+        backbone.load_weights(weights_path, skip_mismatch=True)
+        logger.info("✅ Loaded custom backbone weights from '%s'.", weights_path)
+
+    logger.info(
+        "✅ Backbone: ResNet50@conv4_block6_out, trainable=%s, output shape=%s",
+        trainable,
+        backbone.output_shape,
+    )
+    return backbone
+
+
+def build_aspp(
+    x: tf.Tensor,
+    filters: int = 256,
+    name_prefix: str = "aspp",
+) -> tf.Tensor:
+    """Atrous Spatial Pyramid Pooling (ASPP) block."""
+    b0 = layers.Conv2D(filters, 1, padding="same", use_bias=False,
+                       name=f"{name_prefix}_b0")(x)
+    b0 = layers.BatchNormalization(name=f"{name_prefix}_b0_bn")(b0)
+    b0 = layers.Activation("relu", name=f"{name_prefix}_b0_relu")(b0)
+
+    b1 = layers.Conv2D(filters, 3, padding="same", dilation_rate=6, use_bias=False,
+                       name=f"{name_prefix}_b1")(x)
+    b1 = layers.BatchNormalization(name=f"{name_prefix}_b1_bn")(b1)
+    b1 = layers.Activation("relu", name=f"{name_prefix}_b1_relu")(b1)
+
+    b2 = layers.Conv2D(filters, 3, padding="same", dilation_rate=12, use_bias=False,
+                       name=f"{name_prefix}_b2")(x)
+    b2 = layers.BatchNormalization(name=f"{name_prefix}_b2_bn")(b2)
+    b2 = layers.Activation("relu", name=f"{name_prefix}_b2_relu")(b2)
+
+    b3 = layers.Conv2D(filters, 3, padding="same", dilation_rate=18, use_bias=False,
+                       name=f"{name_prefix}_b3")(x)
+    b3 = layers.BatchNormalization(name=f"{name_prefix}_b3_bn")(b3)
+    b3 = layers.Activation("relu", name=f"{name_prefix}_b3_relu")(b3)
+
+    b4 = layers.GlobalAveragePooling2D(name=f"{name_prefix}_gap")(x)
+    b4 = layers.Reshape((1, 1, -1), name=f"{name_prefix}_gap_reshape")(b4)
+    b4 = layers.Conv2D(filters, 1, use_bias=False, name=f"{name_prefix}_b4_conv")(b4)
+    b4 = layers.BatchNormalization(name=f"{name_prefix}_b4_bn")(b4)
+    b4 = layers.Activation("relu", name=f"{name_prefix}_b4_relu")(b4)
+    
+    b4 = ResizeToMatch(name=f"{name_prefix}_b4_resize")([b4, x])
+
+    out = layers.Concatenate(name=f"{name_prefix}_concat")([b0, b1, b2, b3, b4])
+    out = layers.Conv2D(filters, 1, padding="same", use_bias=False,
+                        name=f"{name_prefix}_proj")(out)
+    out = layers.BatchNormalization(name=f"{name_prefix}_proj_bn")(out)
+    out = layers.Activation("relu", name=f"{name_prefix}_proj_relu")(out)
+    
+    logger.debug("✅ ASPP output shape: %s", out.shape)
+    return out
+
+
+def build_dr_head(
+    x: tf.Tensor,
+    num_classes: int = 5,
+    dropout_rate: float = 0.5,
+    hidden_units: int = 256,
+) -> tf.Tensor:
+    """Build the Diabetic Retinopathy (DR) classification head."""
+    x = layers.GlobalAveragePooling2D(name="dr_gap")(x)
+    x = layers.LayerNormalization(name="dr_ln0")(x)
+
+    shortcut = layers.Dense(hidden_units, use_bias=True, name="dr_res_proj")(x)
+    shortcut = layers.BatchNormalization(name="dr_res_proj_bn")(shortcut)
+
+    h = layers.Dense(hidden_units, use_bias=False, name="dr_fc1")(x)
+    h = layers.BatchNormalization(name="dr_fc1_bn")(h)
+    h = layers.Activation("swish", name="dr_fc1_act")(h)
+    h = layers.Dropout(dropout_rate * 0.5, name="dr_fc1_dropout")(h)
+    h = layers.Dense(hidden_units, use_bias=False, name="dr_fc2")(h)
+    h = layers.BatchNormalization(name="dr_fc2_bn")(h)
+
+    x = layers.Add(name="dr_residual_add")([shortcut, h])
+    x = layers.Activation("swish", name="dr_residual_act")(x)
+    x = layers.Dropout(dropout_rate, name="dr_dropout")(x)
+    x = layers.Dense(num_classes, use_bias=False, activation="softmax", name="dr_output")(x)
+    return x
+
+
+def build_dme_head(
+    x: tf.Tensor,
+    num_classes: int = 3,
+    dropout_rate: float = 0.5,
+    hidden_units: int = 256,
+    residual_mlp: bool = False,
+) -> tf.Tensor:
+    """Build the DME (Diabetic Macular Edema) classification head."""
+    x = layers.GlobalAveragePooling2D(name="dme_gap")(x)
+    if residual_mlp:
+        x = layers.LayerNormalization(name="dme_ln0")(x)
+        shortcut = layers.Dense(hidden_units, use_bias=False, name="dme_res_proj")(x)
+
+        h = layers.Dense(hidden_units, use_bias=False, name="dme_fc1")(x)
+        h = layers.Activation("swish", name="dme_fc1_act")(h)
+        h = layers.Dropout(dropout_rate * 0.5, name="dme_fc1_dropout")(h)
+        h = layers.Dense(hidden_units, use_bias=False, name="dme_fc2")(h)
+
+        x = layers.Add(name="dme_residual_add")([shortcut, h])
+        x = layers.Activation("swish", name="dme_residual_act")(x)
+        x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
+    else:
+        x = layers.Dense(hidden_units, use_bias=False, activation="relu", name="dme_fc1")(x)
+        x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
+    x = layers.Dense(num_classes, use_bias=False, activation="softmax", name="dme_risk")(x)
+    return x
+
+
+def build_model(
+    input_shape: Tuple[int, int, int] = (512, 512, 3),
+    backbone_weights: str = "imagenet",
+    num_dme_classes: int = 3,
+    num_dr_classes: int = 5,
+    aspp_filters: int = 256,
+    dr_head_units: int = 256,
+    dme_head_units: int = 256,
+    dme_head_residual: bool = False,
+    dropout_rate: float = 0.5,
+    trainable: bool = True,
+    backbone_weights_path: Optional[str] = None,
+) -> keras.Model:
+    """Build the complete multi-task DR + DME model."""
+    inputs = keras.Input(shape=input_shape, name="input_image")
+
+    backbone = build_backbone(
+        input_shape=input_shape,
+        weights=backbone_weights,
+        trainable=trainable,
+        weights_path=backbone_weights_path,
+    )
+    features = backbone(inputs)
+    logger.info("✅ Backbone: %d parameters", backbone.count_params())
+
+    aspp_out = build_aspp(features, filters=aspp_filters)
+    logger.info("✅ ASPP module added")
+    
+    dr_out = build_dr_head(
+        aspp_out,
+        num_classes=num_dr_classes,
+        dropout_rate=dropout_rate,
+        hidden_units=dr_head_units,
+    )
+
+    dme_out = build_dme_head(
+        aspp_out,
+        num_classes=num_dme_classes,
+        dropout_rate=dropout_rate,
+        hidden_units=dme_head_units,
+        residual_mlp=dme_head_residual,
+    )
+
+    model = keras.Model(
+        inputs=inputs,
+        outputs={"dr_output": dr_out, "dme_risk": dme_out},
+        name="multitask_dr_dme",
+    )
+
+    model.trainable = trainable
+
+    logger.info("✅ Built multi-task model:")
+    logger.info("   Total parameters: %d", model.count_params())
+    logger.info("   Trainable: %s", trainable)
+    logger.info("   Input shape: %s", input_shape)
+
+    return model
 
 
 def _snapshot_layer_weights(model, layer_names):
@@ -109,7 +328,7 @@ def build_legacy_dr_regression_model(
     backbone_weights: Optional[str] = None,
     trainable: bool = False,
 ):
-    """Build legacy DR regression model for old Stage-2 checkpoints.
+    """Build legacy DR regression model for old Stage-2 checkpoints (fallback only).
 
     Legacy DR head: GAP -> Dense(256,relu) -> Dropout(0.4) -> Dense(1,relu)
     with layer names preserved for checkpoint compatibility.
@@ -136,7 +355,16 @@ def build_legacy_dr_regression_model(
 
 
 def build_best_matching_model(weights_path: str):
-    """Build a model variant that best matches the provided checkpoint."""
+    """Build a model variant that best matches the provided checkpoint.
+    
+    First tries the current production pipeline architecture. If weights
+    load successfully into dr_output layer, returns that. Otherwise tries
+    legacy architecture for backward compatibility.
+    """
+    logger.info("Building pipeline architecture from weights_path...")
+    logger.info(f"Loading weights from {weights_path}...")
+    
+    # Try current architecture first
     logger.info("Trying current multi-task classification architecture...")
     current_model = build_model(
         input_shape=(512, 512, 3),
@@ -145,9 +373,10 @@ def build_best_matching_model(weights_path: str):
     )
     ok, status = load_weights_with_fallback(current_model, weights_path, tracked_layer_names=("dr_output",))
     if ok and status.get("dr_output", False):
-        logger.info("Current architecture matched DR head weights.")
+        logger.info("✅ Current architecture matched DR head weights.")
         return current_model, "classification", "current-multitask"
 
+    # Fallback to legacy if current doesn't work
     logger.warning(
         "Current architecture did not load DR head weights. "
         "Trying legacy DR regression architecture..."
@@ -163,7 +392,7 @@ def build_best_matching_model(weights_path: str):
         tracked_layer_names=("dr_output",),
     )
     if ok_legacy and status_legacy.get("dr_output", False):
-        logger.info("Legacy architecture matched DR head weights.")
+        logger.info("✅ Legacy architecture matched DR head weights.")
         return legacy_model, "regression", "legacy-dr-regression"
 
     raise RuntimeError(
