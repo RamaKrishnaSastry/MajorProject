@@ -26,6 +26,7 @@ from dataset_loader import (
     _find_column,
     _resolve_image_path,
     _build_tf_dataset,
+    load_dme_csv,
 )
 from preprocess import make_preprocess_fn
 
