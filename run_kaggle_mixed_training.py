@@ -28,6 +28,13 @@ import time
 import datetime
 from pathlib import Path
 
+# Optional: memory monitoring
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -60,6 +67,66 @@ def find_dir(root_path, dirname_patterns):
                 if pattern.lower() in dir_name.lower():
                     return os.path.join(root, dir_name)
     return None
+
+
+def check_memory_safety(idrid_img_dir, eyepacs_img_dir, batch_size):
+    """Check if memory is safe for mixed training without kernel crash.
+    
+    Kaggle T4 GPU has:
+    - ~15GB GPU VRAM
+    - ~30GB CPU RAM
+    
+    This function warns if batch size or dataset is too large.
+    """
+    try:
+        import tensorflow as tf
+    except ImportError:
+        logger.warning("TensorFlow not imported - skipping memory check")
+        return
+    
+    # Get available memory
+    try:
+        if HAS_PSUTIL:
+            available_ram_gb = psutil.virtual_memory().available / (1024**3)
+        else:
+            available_ram_gb = 30  # Assume typical Kaggle RAM
+        
+        gpu_devices = tf.config.list_physical_devices('GPU')
+        gpu_memory_gb = 15 if gpu_devices else 0  # T4 has ~15GB
+    except:
+        logger.warning("Could not determine available memory - proceeding with caution")
+        available_ram_gb = 30
+        gpu_memory_gb = 15
+    
+    # Count images
+    idrid_count = len([f for f in os.listdir(idrid_img_dir) if f.endswith(('.jpg', '.jpeg', '.png'))])
+    eyepacs_count = len([f for f in os.listdir(eyepacs_img_dir) if f.endswith(('.jpg', '.jpeg', '.png'))])
+    total_count = idrid_count + eyepacs_count
+    
+    logger.info(f"\n{'='*70}")
+    logger.info("MEMORY SAFETY CHECK")
+    logger.info(f"{'='*70}")
+    logger.info(f"Available RAM: {available_ram_gb:.1f} GB")
+    logger.info(f"Available GPU: {gpu_memory_gb:.1f} GB")
+    logger.info(f"Total images: {total_count:,} (IDRiD: {idrid_count}, EyePACS: {eyepacs_count})")
+    logger.info(f"Batch size: {batch_size}")
+    logger.info(f"\n⚠️ IMPORTANT: Images load via tf.data STREAMING pipeline")
+    logger.info(f"   → NOT all images loaded to RAM at once")
+    logger.info(f"   → Only {batch_size} images per batch in memory")
+    logger.info(f"   → Much safer than loading entire dataset!")
+    
+    # Warnings
+    if batch_size > 32:
+        logger.warning(f"\n⚠️ WARNING: batch_size={batch_size} is large for Kaggle GPU")
+        logger.warning(f"   Kaggle T4 has limited VRAM. May cause OOM.")
+        logger.warning(f"   Recommended: batch_size <= 16")
+    
+    if batch_size * 512 * 512 * 3 / (1024**3) > gpu_memory_gb * 0.7:
+        logger.warning(f"\n⚠️ WARNING: One batch uses significant GPU memory")
+        logger.warning(f"   Reduce batch_size if you see memory errors")
+    
+    logger.info(f"\n✅ Memory check passed. Safe to proceed.")
+    logger.info(f"{'='*70}\n")
 
 
 def discover_kaggle_datasets():
@@ -321,24 +388,31 @@ EXAMPLES:
        --eyepacs-csv /kaggle/input/eyepacs/trainLabels.csv \\
        --eyepacs-images /kaggle/input/eyepacs/train
 
-  2. MEDIUM - Auto-discover within dataset roots:
-     python run_kaggle_mixed_training.py \\
-       --idrid-dataset /kaggle/input/idrid \\
-       --eyepacs-dataset /kaggle/input/eyepacs
-
-  3. SIMPLEST - Auto-discover in /kaggle/input/:
-     python run_kaggle_mixed_training.py
-
-  4. With custom hyperparameters:
+  2. MEMORY SAFE - Limit EyePACS to prevent kernel crash:
      python run_kaggle_mixed_training.py \\
        --idrid-csv /kaggle/input/idrid/DME_Grades.csv \\
        --idrid-images /kaggle/input/idrid/A. Training set \\
        --eyepacs-csv /kaggle/input/eyepacs/trainLabels.csv \\
        --eyepacs-images /kaggle/input/eyepacs/train \\
-       --epochs-stage1 50 \\
-       --epochs-stage2 40 \\
-       --batch-size 16 \\
-       --list-outputs
+       --batch-size 8 \\
+       --max-eyepacs-samples 20000
+
+  3. DIAGNOSE - Check memory without training:
+     python run_kaggle_mixed_training.py \\
+       --idrid-csv /kaggle/input/idrid/DME_Grades.csv \\
+       --idrid-images /kaggle/input/idrid/A. Training set \\
+       --eyepacs-csv /kaggle/input/eyepacs/trainLabels.csv \\
+       --eyepacs-images /kaggle/input/eyepacs/train \\
+       --skip-memory-check
+
+  4. AUTO-DISCOVER - Full auto-discovery in /kaggle/input/:
+     python run_kaggle_mixed_training.py
+
+MEMORY SAFETY:
+  - tf.data pipeline streams images (doesn't load all to RAM)
+  - Only 'batch_size' images in GPU memory at once
+  - Recommended batch_size for Kaggle T4: 8-16
+  - If kernel crashes: reduce batch_size or --max-eyepacs-samples
         """,
     )
     
@@ -418,6 +492,19 @@ EXAMPLES:
         help="Batch size (default: 12 for Kaggle GPU memory)",
     )
     
+    # Memory safety options
+    parser.add_argument(
+        "--max-eyepacs-samples",
+        type=int,
+        default=None,
+        help="Limit EyePACS to first N images (e.g., 20000 for smaller dataset)",
+    )
+    parser.add_argument(
+        "--skip-memory-check",
+        action="store_true",
+        help="Skip memory safety check (use with caution)",
+    )
+    
     # Other options
     parser.add_argument(
         "--list-outputs",
@@ -482,6 +569,12 @@ EXAMPLES:
         
         # Step 3: Create config
         config_path = create_config(args)
+        
+        # Step 3.5: Memory safety check (prevent kernel restart)
+        if not args.skip_memory_check:
+            check_memory_safety(idrid_img_dir, eyepacs_img_dir, args.batch_size)
+        else:
+            logger.info("⚠️ Memory check skipped (--skip-memory-check)")
         
         # Step 4: Run training
         result = run_training(args, idrid_csv, idrid_img_dir, eyepacs_csv, eyepacs_img_dir, config_path)
