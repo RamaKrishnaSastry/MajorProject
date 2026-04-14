@@ -394,7 +394,7 @@ def create_mixed_dr_train_val_datasets(
     dr_class_weights = compute_dr_class_weights_mixed(train_df["dr_label"].values)
 
     # Create tf.data pipelines for DR-only task
-    preprocess_fn = make_preprocess_fn(augment=augment_train)
+    preprocess_fn = make_preprocess_fn()
     train_ds = _build_tf_dataset(
         train_df[["image_path", "dr_label"]].values,
         batch_size=batch_size,
@@ -404,7 +404,7 @@ def create_mixed_dr_train_val_datasets(
         include_dme=False,  # Stage 1 is DR-only
     )
 
-    preprocess_fn_val = make_preprocess_fn(augment=False)
+    preprocess_fn_val = make_preprocess_fn()
     val_ds = _build_tf_dataset(
         val_df[["image_path", "dr_label"]].values,
         batch_size=batch_size,
