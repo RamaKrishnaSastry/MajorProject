@@ -725,6 +725,64 @@ def _log_and_save_epoch_raw_qwk_table(stage_name: str, history: Dict, output_dir
     logger.info("Saved %s raw epoch QWK table to '%s'.", stage_name, csv_path)
 
 
+def _consolidate_best_model(config: Dict, two_stage: bool, model):
+    """Consolidate and save the best model from the pipeline as .model.h5.
+    
+    Identifies which checkpoint is the true best (joint > QWK > final) and saves
+    it as a .model.h5 file for easy direct loading.
+    
+    Parameters
+    ----------
+    config : dict
+        Pipeline config with checkpoint_dir and output_dir
+    two_stage : bool
+        Whether two-stage training was performed
+    model : keras.Model
+        Current model instance to load best weights into
+        
+    Returns
+    -------
+    str or None
+        Path to best saved model (.model.h5) or None if none found
+    """
+    best_ckpt = None
+    best_ckpt_name = None
+    
+    # Stage 2 takes priority if it exists
+    stage_dir = "stage2" if two_stage else "stage1"
+    checkpoint_dir = os.path.join(config["checkpoint_dir"], stage_dir)
+    
+    # Check for best_joint first, then best_qwk
+    best_joint_path = os.path.join(checkpoint_dir, "best_joint.weights.h5")
+    best_qwk_path = os.path.join(checkpoint_dir, "best_qwk.weights.h5")
+    
+    if os.path.exists(best_joint_path):
+        best_ckpt = best_joint_path
+        best_ckpt_name = "best_joint"
+    elif os.path.exists(best_qwk_path):
+        best_ckpt = best_qwk_path
+        best_ckpt_name = "best_qwk"
+    
+    if best_ckpt is None:
+        logger.warning("No best checkpoint found for consolidation (neither joint nor QWK)")
+        return None
+    
+    try:
+        # Load best checkpoint into model
+        model.load_weights(best_ckpt)
+        logger.info("✅ Loaded best checkpoint for consolidation: %s", best_ckpt_name)
+        
+        # Save as full .model.h5
+        model_output_path = os.path.join(config["output_dir"], f"model_final_best.model.h5")
+        model.save(model_output_path)
+        logger.info("✅ Saved consolidated best model to '%s' (%s)", model_output_path, best_ckpt_name)
+        
+        return model_output_path
+    except Exception as e:
+        logger.warning("Could not consolidate best model: %s", e)
+        return None
+
+
 def aggregate_results(
     all_stage_metrics: Dict,
     output_dir: str,
@@ -984,11 +1042,16 @@ def run_pipeline(
         )
         _log_and_save_epoch_raw_qwk_table("stage2", history2, cfg["output_dir"])
 
+    # Consolidate and save the best model across all stages
+    best_model_path = _consolidate_best_model(cfg, two_stage, model)
+
     report = aggregate_results(
         all_metrics,
         cfg["output_dir"],
         joint_selection_cfg=cfg.get("joint_selection", {}),
     )
+    if best_model_path:
+        report["best_model_path"] = best_model_path
     elapsed = time.time() - t_total
     logger.info("Total pipeline time: %.1f seconds.", elapsed)
     report["elapsed_seconds"] = round(elapsed, 1)
@@ -1088,6 +1151,12 @@ def run_stage2_only(
         cfg["output_dir"],
         joint_selection_cfg=cfg.get("joint_selection", {}),
     )
+    
+    # Consolidate and save the best model
+    best_model_path = _consolidate_best_model(cfg, two_stage=False, model=model)
+    if best_model_path:
+        report["best_model_path"] = best_model_path
+    
     elapsed = time.time() - t_total
     logger.info("Total stage2-only time: %.1f seconds.", elapsed)
     report["elapsed_seconds"] = round(elapsed, 1)
