@@ -205,17 +205,28 @@ def stage_data_preparation(
     csv_path: str,
     image_dir: str,
     config: Dict,
+    eyepacs_csv: Optional[str] = None,
+    eyepacs_image_dir: Optional[str] = None,
+    stage: str = "stage1",
 ) -> tuple:
     """Stage 0: Load and prepare datasets.
 
     Parameters
     ----------
     csv_path : str
-        Path to DME_Grades.csv.
+        Path to IDRiD DME_Grades.csv.
     image_dir : str
-        Directory with fundus images.
+        Directory with IDRiD fundus images.
     config : dict
         Pipeline configuration.
+    eyepacs_csv : str, optional
+        Path to EyePACS trainLabels.csv. If provided for Stage 1, combines
+        IDRiD + EyePACS for DR-only training. Default: None (IDRiD only).
+    eyepacs_image_dir : str, optional
+        Directory with EyePACS images. Required if eyepacs_csv is provided.
+    stage : str, optional
+        'stage1' or 'stage2'. For Stage 2, always uses IDRiD only (with DME).
+        Default: 'stage1'.
 
     Returns
     -------
@@ -230,6 +241,40 @@ def stage_data_preparation(
     input_shape = tuple(config["input_shape"])
     target_size = input_shape[:2]
 
+    # Stage 2 always uses IDRiD only (for DME training)
+    if stage == "stage2":
+        eyepacs_csv = None
+        eyepacs_image_dir = None
+
+    # Mixed training only for Stage 1 with both IDRiD and EyePACS
+    if stage == "stage1" and eyepacs_csv is not None and eyepacs_image_dir is not None:
+        logger.info("Stage 1: Using mixed IDRiD + EyePACS for DR training")
+        from dataset_loader_eyepacs import create_mixed_dr_train_val_datasets
+        train_ds, val_ds, dr_class_weights, metadata = create_mixed_dr_train_val_datasets(
+            idrid_csv=csv_path,
+            idrid_image_dir=image_dir,
+            eyepacs_csv=eyepacs_csv,
+            eyepacs_image_dir=eyepacs_image_dir,
+            batch_size=config["batch_size"],
+            val_split=config["val_split"],
+            augment_train=config["augment_train"],
+            seed=config["seed"],
+        )
+        # Return class weights as {'dr': dict, 'dme': dict} format
+        class_weights = {
+            'dr': dr_class_weights,
+            'dme': {},  # Not used in Stage 1 (DR-only)
+        }
+        split_info = {
+            'metadata': metadata,
+            'seed': config["seed"],
+            'val_split': config["val_split"],
+            'mixed_training': True,
+            'stage': stage,
+        }
+        return train_ds, val_ds, class_weights, split_info
+
+    # Standard IDRiD-only training (Stage 1 without EyePACS, or Stage 2)
     if config.get("use_advanced_loader", True):
         from dataset_loader_advanced import build_datasets_advanced
         train_ds, val_ds, class_weights, split_info = build_datasets_advanced(
@@ -914,15 +959,17 @@ def run_pipeline(
     two_stage: bool = True,
     eyepacs_backbone: Optional[str] = None,
     backbone_weights_path: Optional[str] = None,
+    eyepacs_csv: Optional[str] = None,
+    eyepacs_image_dir: Optional[str] = None,
 ) -> Dict:
     """Run the full multi-stage training and evaluation pipeline.
 
     Parameters
     ----------
     csv_path : str
-        Path to DME_Grades.csv.
+        Path to IDRiD DME_Grades.csv.
     image_dir : str
-        Directory with fundus images.
+        Directory with IDRiD fundus images.
     config : dict, optional
         Pipeline configuration dict. Takes priority over config_path.
     config_path : str, optional
@@ -937,6 +984,12 @@ def run_pipeline(
         Path to a custom ``.h5`` backbone weights file for Stage 1.  Enables
         transfer learning from any pre-trained backbone (e.g. EyePACS,
         proprietary).  Ignored when ``eyepacs_backbone`` is set.
+    eyepacs_csv : str, optional
+        Path to EyePACS trainLabels.csv. If provided along with eyepacs_image_dir,
+        Stage 1 will train on mixed IDRiD + EyePACS data for DR backbone learning.
+        Stage 2 will always use IDRiD only (for DME fine-tuning).
+    eyepacs_image_dir : str, optional
+        Directory with EyePACS fundus images. Required if eyepacs_csv is provided.
 
     Returns
     -------
@@ -956,9 +1009,12 @@ def run_pipeline(
 
     t_total = time.time()
 
-    # Data preparation
+    # Data preparation for Stage 1 (with optional EyePACS mixing)
     train_ds, val_ds, class_weights, split_info = stage_data_preparation(
-        csv_path, image_dir, cfg
+        csv_path, image_dir, cfg,
+        eyepacs_csv=eyepacs_csv,
+        eyepacs_image_dir=eyepacs_image_dir,
+        stage="stage1",
     )
 
     all_metrics = {}
@@ -1018,6 +1074,17 @@ def run_pipeline(
     if two_stage:
         logger.info("\n" + "=" * 60 + "\nSTAGE 2: Fine-Tuning\n" + "=" * 60)
         logger.info("Stage 2 starting from: %s", stage2_init_weights)
+        
+        # For mixed training, reload datasets with IDRiD only for Stage 2 DME training
+        if eyepacs_csv is not None and eyepacs_image_dir is not None:
+            logger.info("Stage 2: Reloading IDRiD-only data for DME fine-tuning")
+            train_ds, val_ds, class_weights, split_info = stage_data_preparation(
+                csv_path, image_dir, cfg,
+                eyepacs_csv=None,  # Force IDRiD only
+                eyepacs_image_dir=None,
+                stage="stage2",
+            )
+        
         stage1_baseline_qwk = stage1_raw_qwk
         if np.isfinite(stage1_baseline_qwk):
             logger.info(
