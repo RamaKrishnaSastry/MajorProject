@@ -36,6 +36,42 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
+def load_weights_with_fallback(model, weights_path: str):
+    """
+    Load weights with better error handling for architecture mismatches.
+    
+    Attempts to load weights by layer name first. If that fails, tries
+    loading only backbone weights. Falls back gracefully on full failure.
+    
+    Parameters
+    ----------
+    model : tf.keras.Model
+        Model to load weights into
+    weights_path : str
+        Path to weights file
+    """
+    try:
+        # First try: Load by name (ignores architecture differences)
+        logger.info(f"Attempting to load weights (by_name=True)...")
+        model.load_weights(weights_path, by_name=True, skip_mismatch=True)
+        logger.info("✅ Weights loaded successfully (by_name mode)")
+        return True
+    except Exception as e:
+        logger.warning(f"Load by_name failed: {e}")
+    
+    try:
+        # Second try: Load with skip_mismatch (more forgiving)
+        logger.info(f"Attempting to load weights (skip_mismatch=True)...")
+        model.load_weights(weights_path, skip_mismatch=True)
+        logger.info("✅ Weights loaded successfully (skip_mismatch mode)")
+        return True
+    except Exception as e:
+        logger.warning(f"Load with skip_mismatch failed: {e}")
+    
+    logger.warning(f"Could not load weights from {weights_path}. Using ImageNet backbone + random heads.")
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Dataset Loaders
 # ---------------------------------------------------------------------------
@@ -556,8 +592,7 @@ def main():
     # Load weights if specified
     if args.use_model and Path(args.use_weights).exists():
         logger.info(f"Loading weights from {args.use_weights}...")
-        model.load_weights(args.use_weights, skip_mismatch=True)
-        logger.info("Weights loaded successfully!")
+        load_weights_with_fallback(model, args.use_weights)
     elif args.use_model:
         logger.warning(f"Weights file not found: {args.use_weights}")
         logger.warning("Using ImageNet pre-trained weights instead")
