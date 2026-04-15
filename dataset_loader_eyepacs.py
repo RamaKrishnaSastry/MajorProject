@@ -407,7 +407,7 @@ def create_mixed_dr_train_val_datasets(
         batch_size=batch_size,
         shuffle=True,
         augment=augment_train,
-        cache=False,
+        cache=True,  # Cache training data for faster subsequent epochs
         seed=seed,
     )
 
@@ -420,7 +420,7 @@ def create_mixed_dr_train_val_datasets(
         batch_size=batch_size,
         shuffle=False,
         augment=False,
-        cache=False,
+        cache=False,  # Val is small, no need to cache
         seed=seed,
     )
 

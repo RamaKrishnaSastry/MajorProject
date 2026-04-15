@@ -302,6 +302,7 @@ def stage_data_preparation(
             batch_size=config["batch_size"],
             val_split=config["val_split"],
             augment_train=config["augment_train"],
+            cache=True,  # Cache training data for faster subsequent epochs
             seed=config["seed"],
         )
 
