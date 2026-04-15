@@ -1416,6 +1416,15 @@ def train_enhanced(
 ) -> Tuple[keras.Model, Dict]:
 
     cfg = {**DEFAULT_ENHANCED_CONFIG, **(config or {})}
+    
+    # Enable mixed precision training for faster computation on GPUs
+    try:
+        policy = tf.keras.mixed_precision.Policy("mixed_float16")
+        tf.keras.mixed_precision.set_global_policy(policy)
+        logger.info("✅ Mixed precision training ENABLED (float16 forward, float32 backward)")
+    except Exception as e:
+        logger.info("Mixed precision not available: %s", e)
+    
     logger.info("Building enhanced model …")
     dr_class_counts_cache: Optional[np.ndarray] = None
     dr_class_weights_for_loss: Optional[Dict[int, float]] = None
