@@ -1,7 +1,7 @@
 """
-test_cross_dataset_dr.py - Cross-dataset evaluation on Messidor, EyePACS, APTOS.
+test_cross_dataset_dr.py - Dataset evaluation for DR grading (IDRiD and external sets).
 
-Tests the DR classification task only (no DME) on external datasets.
+Tests the DR classification task only (no DME).
 Compares predictions against ground truth DR labels.
 
 Usage:
@@ -417,6 +417,78 @@ def build_best_matching_model(weights_path: str):
 # Dataset Loaders
 # ---------------------------------------------------------------------------
 
+def load_idrid_dr_labels(idrid_images_dir: str, idrid_csv: str) -> Tuple[list, list]:
+    """
+    Load IDRiD dataset with DR labels only.
+
+    IDRiD DR grades: 0=No, 1=Mild, 2=Moderate, 3=Severe NPDR, 4=PDR
+
+    Parameters
+    ----------
+    idrid_images_dir : str
+        Path to IDRiD images directory
+    idrid_csv : str
+        Path to IDRiD CSV annotation file
+
+    Returns
+    -------
+    Tuple[list, list]
+        (image_paths, dr_labels)
+    """
+    image_paths = []
+    dr_labels = []
+
+    images_path = Path(idrid_images_dir)
+    csv_path = Path(idrid_csv)
+
+    try:
+        df = pd.read_csv(csv_path)
+        df.columns = df.columns.str.strip()
+
+        image_col = None
+        for candidate in ["Image name", "image_name", "image", "Image", df.columns[0]]:
+            if candidate in df.columns:
+                image_col = candidate
+                break
+
+        dr_col = None
+        for candidate in ["Retinopathy grade", "dr_grade", "DR_grade", "diagnosis"]:
+            if candidate in df.columns:
+                dr_col = candidate
+                break
+
+        if image_col is None:
+            raise ValueError(f"Could not detect image column. Columns={list(df.columns)}")
+        if dr_col is None:
+            raise ValueError(f"Could not detect DR label column. Columns={list(df.columns)}")
+
+        for _, row in df.iterrows():
+            img_name = str(row[image_col]).strip()
+            dr_label = int(row[dr_col])
+
+            img_path = None
+            if Path(images_path / img_name).exists():
+                img_path = images_path / img_name
+            else:
+                for ext in [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".JPG", ".JPEG", ".PNG"]:
+                    candidate = images_path / (img_name + ext)
+                    if candidate.exists():
+                        img_path = candidate
+                        break
+
+            if img_path:
+                image_paths.append(str(img_path))
+                dr_labels.append(min(dr_label, 4))
+
+    except Exception as e:
+        logger.warning(f"Error loading IDRiD annotations from {csv_path}: {e}")
+
+    logger.info(f"Loaded {len(image_paths)} IDRiD images")
+    if dr_labels:
+        logger.info(f"DR distribution: {pd.Series(dr_labels).value_counts().sort_index().to_dict()}")
+
+    return image_paths, dr_labels
+
 def load_messidor_dr_labels(messidor_images_dir: str, messidor_csv: str) -> Tuple[list, list]:
     """
     Load MESSIDOR dataset with DR labels only.
@@ -747,6 +819,8 @@ def evaluate_dataset(
     dataset_name: str,
     batch_size: int = 8,
     apply_clahe: bool = True,
+    preprocess_ensemble: bool = False,
+    tta_mode: str = "none",
     dr_prediction_mode: str = "classification",
 ) -> Dict:
     """
@@ -766,6 +840,10 @@ def evaluate_dataset(
         Batch size for inference
     apply_clahe : bool
         Whether to apply CLAHE enhancement (default True)
+    preprocess_ensemble : bool
+        If True, run inference with CLAHE on and off and average logits/probabilities.
+    tta_mode : str
+        Test-time augmentation mode: none, hflip, rot4, dihedral8.
         
     Returns
     -------
@@ -795,19 +873,68 @@ def evaluate_dataset(
     
     logger.info(f"Successfully loaded {len(images)} images")
     logger.info(f"CLAHE enhancement: {'Enabled' if apply_clahe else 'Disabled'}")
+    logger.info(f"Preprocessing ensemble: {'Enabled' if preprocess_ensemble else 'Disabled'}")
+    logger.info(f"TTA mode: {tta_mode}")
     
-    # Predict
-    predictions = model.predict(images, batch_size=batch_size, verbose=1)
+    def _extract_dr_output(predictions_obj):
+        if isinstance(predictions_obj, dict):
+            dr_vals = predictions_obj.get("dr_output")
+            if dr_vals is None:
+                dr_vals = next(iter(predictions_obj.values()))
+        elif isinstance(predictions_obj, (tuple, list)):
+            dr_vals = predictions_obj[0]
+        else:
+            dr_vals = predictions_obj
+        return np.asarray(dr_vals)
 
-    # Extract DR predictions
-    if isinstance(predictions, dict):
-        dr_preds = predictions.get("dr_output")
-        if dr_preds is None:
-            dr_preds = next(iter(predictions.values()))
-    elif isinstance(predictions, (tuple, list)):
-        dr_preds = predictions[0]
-    else:
-        dr_preds = predictions
+    def _tta_transforms(mode: str):
+        key = (mode or "none").lower()
+        if key == "hflip":
+            return [
+                ("identity", lambda x: x),
+                ("hflip", lambda x: np.flip(x, axis=2)),
+            ]
+        if key == "rot4":
+            return [
+                ("r0", lambda x: x),
+                ("r90", lambda x: np.rot90(x, 1, axes=(1, 2))),
+                ("r180", lambda x: np.rot90(x, 2, axes=(1, 2))),
+                ("r270", lambda x: np.rot90(x, 3, axes=(1, 2))),
+            ]
+        if key == "dihedral8":
+            return [
+                ("r0", lambda x: x),
+                ("r90", lambda x: np.rot90(x, 1, axes=(1, 2))),
+                ("r180", lambda x: np.rot90(x, 2, axes=(1, 2))),
+                ("r270", lambda x: np.rot90(x, 3, axes=(1, 2))),
+                ("h", lambda x: np.flip(x, axis=2)),
+                ("v", lambda x: np.flip(x, axis=1)),
+                ("d1", lambda x: np.flip(np.rot90(x, 1, axes=(1, 2)), axis=2)),
+                ("d2", lambda x: np.flip(np.rot90(x, 1, axes=(1, 2)), axis=1)),
+            ]
+        return [("none", lambda x: x)]
+
+    def _predict_dr_with_tta(input_images: np.ndarray) -> np.ndarray:
+        transforms = _tta_transforms(tta_mode)
+        dr_outputs = []
+        for _, transform in transforms:
+            aug_images = transform(input_images)
+            preds_obj = model.predict(aug_images, batch_size=batch_size, verbose=0)
+            dr_outputs.append(_extract_dr_output(preds_obj))
+        return np.mean(np.stack(dr_outputs, axis=0), axis=0)
+
+    # Predict with optional TTA and optional preprocessing ensemble.
+    dr_preds = _predict_dr_with_tta(images)
+    if preprocess_ensemble:
+        alt_images = []
+        for img_path in valid_paths:
+            # Use opposite CLAHE setting for robust domain-shift averaging.
+            alt_images.append(
+                preprocess_image(img_path, apply_clahe_enhancement=not apply_clahe)
+            )
+        alt_images = np.array(alt_images)
+        dr_preds_alt = _predict_dr_with_tta(alt_images)
+        dr_preds = 0.5 * (np.asarray(dr_preds) + np.asarray(dr_preds_alt))
 
     dr_preds = np.asarray(dr_preds)
 
@@ -851,9 +978,11 @@ def evaluate_dataset(
         "num_images": len(images),
         "preprocessing": {
             "clahe_enabled": apply_clahe,
+            "preprocess_ensemble": preprocess_ensemble,
             "border_cropping": 0.10,
             "normalization": "[-1, 1] for ResNet50"
         },
+        "tta_mode": str(tta_mode).lower(),
         "dr_prediction_mode": dr_prediction_mode,
         "dr_qwk": float(qwk),
         "dr_accuracy": float(accuracy),
@@ -881,7 +1010,7 @@ def evaluate_dataset(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Cross-dataset evaluation (DR task only, no DME)"
+        description="Dataset evaluation for DR task only (no DME)"
     )
     parser.add_argument(
         "--use-model",
@@ -894,6 +1023,24 @@ def main():
         type=str,
         default="pipeline_outputs/best_qwk.weights.h5",
         help="Path to pre-trained weights file"
+    )
+    parser.add_argument(
+        "--idrid-images",
+        type=str,
+        default=None,
+        help="Path to IDRiD images directory"
+    )
+    parser.add_argument(
+        "--idrid-csv",
+        type=str,
+        default=None,
+        help="Path to IDRiD CSV annotation file"
+    )
+    parser.add_argument(
+        "--only-idrid",
+        action="store_true",
+        default=False,
+        help="Evaluate only IDRiD and ignore MESSIDOR/EyePACS/APTOS even if provided"
     )
     parser.add_argument(
         "--messidor-images",
@@ -944,6 +1091,19 @@ def main():
         help="Disable CLAHE enhancement during preprocessing"
     )
     parser.add_argument(
+        "--preprocess-ensemble",
+        action="store_true",
+        default=False,
+        help="Average predictions from CLAHE on/off preprocessing (domain-shift robust)"
+    )
+    parser.add_argument(
+        "--tta-mode",
+        type=str,
+        default="none",
+        choices=["none", "hflip", "rot4", "dihedral8"],
+        help="Test-time augmentation mode"
+    )
+    parser.add_argument(
         "--output-file",
         type=str,
         default="cross_dataset_results.json",
@@ -986,6 +1146,8 @@ def main():
         },
         "preprocessing": {
             "clahe_enabled": not args.disable_clahe,
+            "preprocess_ensemble": bool(args.preprocess_ensemble),
+            "tta_mode": str(args.tta_mode).lower(),
             "border_cropping": 0.10,
             "target_size": [512, 512],
             "normalization": "[-1, 1] for ResNet50"
@@ -993,41 +1155,64 @@ def main():
         "datasets": {}
     }
     
-    # MESSIDOR
-    if args.messidor_images and args.messidor_csv:
-        if Path(args.messidor_images).exists() and Path(args.messidor_csv).exists():
-            img_paths, labels = load_messidor_dr_labels(args.messidor_images, args.messidor_csv)
+    # IDRiD (primary evaluation target)
+    if args.idrid_images and args.idrid_csv:
+        if Path(args.idrid_images).exists() and Path(args.idrid_csv).exists():
+            img_paths, labels = load_idrid_dr_labels(args.idrid_images, args.idrid_csv)
             if img_paths and labels:
                 results = evaluate_dataset(
-                    model, img_paths, labels, "MESSIDOR", args.batch_size, 
+                    model, img_paths, labels, "IDRiD", args.batch_size,
                     apply_clahe=not args.disable_clahe,
+                    preprocess_ensemble=bool(args.preprocess_ensemble),
+                    tta_mode=str(args.tta_mode).lower(),
                     dr_prediction_mode=dr_prediction_mode,
                 )
-                all_results["datasets"]["messidor"] = results
-    
-    # EyePACS
-    if args.eyepacs_images and args.eyepacs_csv:
-        if Path(args.eyepacs_images).exists() and Path(args.eyepacs_csv).exists():
-            img_paths, labels = load_eyepacs_dr_labels(args.eyepacs_images, args.eyepacs_csv)
-            if img_paths and labels:
-                results = evaluate_dataset(
-                    model, img_paths, labels, "EyePACS", args.batch_size,
-                    apply_clahe=not args.disable_clahe,
-                    dr_prediction_mode=dr_prediction_mode,
-                )
-                all_results["datasets"]["eyepacs"] = results
-    
-    # APTOS 2019
-    if args.aptos_images and args.aptos_csv:
-        if Path(args.aptos_images).exists() and Path(args.aptos_csv).exists():
-            img_paths, labels = load_aptos_dr_labels(args.aptos_images, args.aptos_csv)
-            if img_paths and labels:
-                results = evaluate_dataset(
-                    model, img_paths, labels, "APTOS 2019", args.batch_size,
-                    apply_clahe=not args.disable_clahe,
-                    dr_prediction_mode=dr_prediction_mode,
-                )
-                all_results["datasets"]["aptos"] = results
+                all_results["datasets"]["idrid"] = results
+
+    if not args.only_idrid:
+        # MESSIDOR
+        if args.messidor_images and args.messidor_csv:
+            if Path(args.messidor_images).exists() and Path(args.messidor_csv).exists():
+                img_paths, labels = load_messidor_dr_labels(args.messidor_images, args.messidor_csv)
+                if img_paths and labels:
+                    results = evaluate_dataset(
+                        model, img_paths, labels, "MESSIDOR", args.batch_size,
+                        apply_clahe=not args.disable_clahe,
+                        preprocess_ensemble=bool(args.preprocess_ensemble),
+                        tta_mode=str(args.tta_mode).lower(),
+                        dr_prediction_mode=dr_prediction_mode,
+                    )
+                    all_results["datasets"]["messidor"] = results
+
+        # EyePACS
+        if args.eyepacs_images and args.eyepacs_csv:
+            if Path(args.eyepacs_images).exists() and Path(args.eyepacs_csv).exists():
+                img_paths, labels = load_eyepacs_dr_labels(args.eyepacs_images, args.eyepacs_csv)
+                if img_paths and labels:
+                    results = evaluate_dataset(
+                        model, img_paths, labels, "EyePACS", args.batch_size,
+                        apply_clahe=not args.disable_clahe,
+                        preprocess_ensemble=bool(args.preprocess_ensemble),
+                        tta_mode=str(args.tta_mode).lower(),
+                        dr_prediction_mode=dr_prediction_mode,
+                    )
+                    all_results["datasets"]["eyepacs"] = results
+
+        # APTOS 2019
+        if args.aptos_images and args.aptos_csv:
+            if Path(args.aptos_images).exists() and Path(args.aptos_csv).exists():
+                img_paths, labels = load_aptos_dr_labels(args.aptos_images, args.aptos_csv)
+                if img_paths and labels:
+                    results = evaluate_dataset(
+                        model, img_paths, labels, "APTOS 2019", args.batch_size,
+                        apply_clahe=not args.disable_clahe,
+                        preprocess_ensemble=bool(args.preprocess_ensemble),
+                        tta_mode=str(args.tta_mode).lower(),
+                        dr_prediction_mode=dr_prediction_mode,
+                    )
+                    all_results["datasets"]["aptos"] = results
+    else:
+        logger.info("--only-idrid enabled: skipping MESSIDOR, EyePACS, and APTOS evaluation.")
     
     # Save results
     if all_results["datasets"]:
@@ -1038,7 +1223,7 @@ def main():
         
         # Summary
         logger.info("\n" + "="*60)
-        logger.info("CROSS-DATASET EVALUATION SUMMARY")
+        logger.info("EVALUATION SUMMARY")
         logger.info("="*60)
         for dataset_name, results in all_results["datasets"].items():
             logger.info(f"\n{dataset_name.upper()}:")

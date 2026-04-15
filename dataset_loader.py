@@ -260,12 +260,37 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
     
     Suitable for fundus images.
     """
-    image = tf.image.random_flip_left_right(image)
-    image = tf.image.random_flip_up_down(image)
-    image = tf.image.random_brightness(image, max_delta=0.1)
-    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-    image = tf.clip_by_value(image, -1.0, 1.0)
-    return image
+    # Model inputs are normalized to [-1, 1]; switch to [0, 1] for image ops.
+    x = (image + 1.0) / 2.0
+
+    # Geometric + photometric jitter to simulate scanner/camera variability.
+    x = tf.image.random_flip_left_right(x)
+    x = tf.image.random_flip_up_down(x)
+    x = tf.image.random_brightness(x, max_delta=0.08)
+    x = tf.image.random_contrast(x, lower=0.85, upper=1.15)
+    x = tf.image.random_saturation(x, lower=0.85, upper=1.15)
+    x = tf.image.random_hue(x, max_delta=0.03)
+    x = tf.clip_by_value(x, 0.0, 1.0)
+
+    # Gamma perturbation models illumination differences across domains.
+    gamma = tf.random.uniform([], minval=0.9, maxval=1.1)
+    x = tf.image.adjust_gamma(x, gamma=gamma)
+    x = tf.clip_by_value(x, 0.0, 1.0)
+
+    # Compression artifact simulation (common in heterogeneous datasets).
+    jpeg_in = tf.cast(tf.round(x * 255.0), tf.uint8)
+    jpeg_aug = tf.image.random_jpeg_quality(jpeg_in, min_jpeg_quality=70, max_jpeg_quality=100)
+    x = tf.cast(jpeg_aug, tf.float32) / 255.0
+
+    # Mild sensor noise improves robustness to low-quality captures.
+    noise_std = tf.random.uniform([], minval=0.0, maxval=0.02)
+    noise = tf.random.normal(tf.shape(x), mean=0.0, stddev=noise_std)
+    x = tf.clip_by_value(x + noise, 0.0, 1.0)
+
+    # Convert back to model's expected range.
+    x = x * 2.0 - 1.0
+    x = tf.clip_by_value(x, -1.0, 1.0)
+    return x
 
 
 def _build_tf_dataset(
