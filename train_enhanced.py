@@ -65,9 +65,9 @@ DEFAULT_ENHANCED_CONFIG: Dict = {
     "qwk_history_path": "qwk_history.json",
     # Ordinal loss weight matrix: larger penalty for distant class misclassification
     "ordinal_loss_weighting": True,
-    # Focal loss gamma: 0 = standard CE, 2.0 = standard focal loss.
+    # Focal loss gamma: 0 = standard CE.
     # Higher gamma reduces gradient for easy majority-class samples.
-    "focal_loss_gamma": 2.0,
+    "focal_loss_gamma": 0.5,
     "dme_label_smoothing": 0.05,
     "dme_soft_ordinal_weights": True,
     "dr_loss_weight": 0.2,
@@ -169,7 +169,7 @@ class OrdinalWeightedCrossEntropy(keras.losses.Loss):
         self,
         num_classes=3,
         class_weights=None,
-        focal_loss_gamma=2.0,
+        focal_loss_gamma=0.5,
         label_smoothing=0.05,
         use_soft_ordinal_weights=True,
         **kwargs,
@@ -972,7 +972,7 @@ def compile_model_enhanced(
     class_weights: Optional[Dict[int, float]] = None,
     dr_class_weights: Optional[Dict[int, float]] = None,
     ordinal_loss_weighting: bool = True,
-    focal_loss_gamma: float = 2.0,
+    focal_loss_gamma: float = 0.5,
     dme_label_smoothing: float = 0.05,
     dme_soft_ordinal_weights: bool = True,
     dr_loss_weight: float = 0.2,
@@ -1615,7 +1615,7 @@ def train_enhanced(
         class_weights=class_weights,
         dr_class_weights=dr_class_weights_for_loss,
         ordinal_loss_weighting=cfg.get("ordinal_loss_weighting", True),
-        focal_loss_gamma=cfg.get("focal_loss_gamma", 2.0),
+        focal_loss_gamma=cfg.get("focal_loss_gamma", 0.5),
         dme_label_smoothing=float(cfg.get("dme_label_smoothing", 0.05)),
         dme_soft_ordinal_weights=bool(cfg.get("dme_soft_ordinal_weights", True)),
         dr_loss_weight=float(cfg.get("dr_loss_weight", 0.2)),

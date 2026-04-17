@@ -41,7 +41,7 @@ ordinal_penalty: true # Boundary classes weighted extra
 # when stageX.ordinal_loss_weighting=true (default below).
 
 # Preprocessing parameters (CLAHE + cropping)
-border_fraction: 0.10
+border_fraction: 0.05
 clip_limit: 2.0
 grid_size: 8
 
@@ -56,7 +56,7 @@ stage1:
   lr_reduce_factor: 0.5
   min_lr: 1.0e-7
   ordinal_loss_weighting: true
-  focal_loss_gamma: 1.5
+  focal_loss_gamma: 0.5
   dme_label_smoothing: 0.02 # reduced smoothing to preserve class separation for QWK
   dme_soft_ordinal_weights: false # stage1 uses hard ordinal weighting for sharper boundaries
   dr_loss_weight: 0.32
@@ -75,7 +75,7 @@ stage2:
   lr_reduce_factor: 0.5 # avoid collapsing LR too fast; helps DME continue improving late-stage
   min_lr: 1.0e-8 # keep LR from becoming effectively frozen in long stage2 runs
   ordinal_loss_weighting: true
-  focal_loss_gamma: 1.5
+  focal_loss_gamma: 0.5
   dme_label_smoothing: 0.005 # sharpen DME boundary further while keeping stage2 stable
   dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
   dr_loss_weight: 0.13 # slightly lighter DR coupling to recover DME headroom near the 0.8 target
