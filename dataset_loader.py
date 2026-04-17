@@ -266,11 +266,9 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
     # Geometric + photometric jitter to simulate scanner/camera variability.
     x = tf.image.random_flip_left_right(x)
     x = tf.image.random_flip_up_down(x)
-    x = tf.keras.layers.RandomRotation(
-        factor=0.5,
-        fill_mode="constant",
-        fill_value=0.0,
-    )(x, training=True)
+    # Use rot90 here because it is variable-free and safe inside tf.data tracing.
+    rotation_k = tf.random.uniform([], minval=0, maxval=4, dtype=tf.int32)
+    x = tf.image.rot90(x, k=rotation_k)
     x = tf.image.random_brightness(x, max_delta=0.2)
     x = tf.image.random_contrast(x, lower=0.6, upper=1.4)
     x = tf.image.random_saturation(x, lower=0.7, upper=1.3)
