@@ -37,6 +37,11 @@ NUM_DR_CLASSES = len(DR_CLASSES)
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+_ROTATION_LAYER = tf.keras.layers.RandomRotation(
+    factor=0.5,
+    fill_mode="reflect",
+)
+
 
 # ---------------------------------------------------------------------------
 # CSV / path helpers
@@ -266,14 +271,15 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
     # Geometric + photometric jitter to simulate scanner/camera variability.
     x = tf.image.random_flip_left_right(x)
     x = tf.image.random_flip_up_down(x)
-    x = tf.image.random_brightness(x, max_delta=0.08)
-    x = tf.image.random_contrast(x, lower=0.85, upper=1.15)
-    x = tf.image.random_saturation(x, lower=0.85, upper=1.15)
-    x = tf.image.random_hue(x, max_delta=0.03)
+    x = _ROTATION_LAYER(x, training=True)
+    x = tf.image.random_brightness(x, max_delta=0.2)
+    x = tf.image.random_contrast(x, lower=0.6, upper=1.4)
+    x = tf.image.random_saturation(x, lower=0.7, upper=1.3)
+    x = tf.image.random_hue(x, max_delta=0.08)
     x = tf.clip_by_value(x, 0.0, 1.0)
 
     # Gamma perturbation models illumination differences across domains.
-    gamma = tf.random.uniform([], minval=0.9, maxval=1.1)
+    gamma = tf.random.uniform([], minval=0.85, maxval=1.2)
     x = tf.image.adjust_gamma(x, gamma=gamma)
     x = tf.clip_by_value(x, 0.0, 1.0)
 
@@ -283,7 +289,7 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
     x = tf.cast(jpeg_aug, tf.float32) / 255.0
 
     # Mild sensor noise improves robustness to low-quality captures.
-    noise_std = tf.random.uniform([], minval=0.0, maxval=0.02)
+    noise_std = tf.random.uniform([], minval=0.0, maxval=0.03)
     noise = tf.random.normal(tf.shape(x), mean=0.0, stddev=noise_std)
     x = tf.clip_by_value(x + noise, 0.0, 1.0)
 
@@ -362,7 +368,7 @@ def build_datasets(
     augment_train: bool = True,
     cache: bool = False,
     seed: int = 42,
-    border_fraction: float = 0.10,
+    border_fraction: float = 0.05,
     clip_limit: float = 2.0,
     grid_size: int = 8,
 ) -> Tuple[tf.data.Dataset, tf.data.Dataset, Dict[int, float]]:

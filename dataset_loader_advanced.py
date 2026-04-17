@@ -404,7 +404,7 @@ def build_datasets_advanced(
     augment_train: bool = True,
     cache: bool = False,
     seed: int = 42,
-    border_fraction: float = 0.10,
+    border_fraction: float = 0.05,
     clip_limit: float = 2.0,
     grid_size: int = 8,
     medical_importance: bool = True,

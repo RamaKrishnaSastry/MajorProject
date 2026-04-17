@@ -683,7 +683,7 @@ def load_aptos_dr_labels(aptos_images_dir: str, aptos_csv: str) -> Tuple[list, l
 # Image Preprocessing
 # ---------------------------------------------------------------------------
 
-def crop_black_borders(image: np.ndarray, border_fraction: float = 0.10) -> np.ndarray:
+def crop_black_borders(image: np.ndarray, border_fraction: float = 0.05) -> np.ndarray:
     """Remove black circular borders common in fundus photographs.
     
     Parameters
@@ -698,11 +698,19 @@ def crop_black_borders(image: np.ndarray, border_fraction: float = 0.10) -> np.n
     np.ndarray
         Cropped image
     """
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+    coords = cv2.findNonZero(thresh)
+
+    if coords is not None:
+        x, y, w, h = cv2.boundingRect(coords)
+        if w > 0 and h > 0:
+            return image[y : y + h, x : x + w]
+
     h, w = image.shape[:2]
     crop_h = int(h * border_fraction)
     crop_w = int(w * border_fraction)
-    cropped = image[crop_h : h - crop_h, crop_w : w - crop_w]
-    return cropped
+    return image[crop_h : h - crop_h, crop_w : w - crop_w]
 
 
 def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, grid_size: int = 8) -> np.ndarray:
@@ -728,18 +736,18 @@ def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, grid_size: int = 8) 
     """
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(grid_size, grid_size))
     # Extract green channel (index 1) — best contrast for retinal vessels
-    green = image[:, :, 1]
-    enhanced_green = clahe.apply(green)
-    result = image.copy()
-    result[:, :, 1] = enhanced_green  # Replace only green channel
-    return result
+    lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    enhanced_l = clahe.apply(l_channel)
+    enhanced_lab = cv2.merge([enhanced_l, a_channel, b_channel])
+    return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
 
 
 def preprocess_image(
     image_path: str, 
     target_size: Tuple[int, int] = (512, 512),
     apply_clahe_enhancement: bool = True,
-    border_fraction: float = 0.10,
+    border_fraction: float = 0.05,
 ) -> np.ndarray:
     """
     Full preprocessing pipeline for fundus images.
@@ -979,7 +987,7 @@ def evaluate_dataset(
         "preprocessing": {
             "clahe_enabled": apply_clahe,
             "preprocess_ensemble": preprocess_ensemble,
-            "border_cropping": 0.10,
+            "border_cropping": 0.05,
             "normalization": "[-1, 1] for ResNet50"
         },
         "tta_mode": str(tta_mode).lower(),
@@ -1148,7 +1156,7 @@ def main():
             "clahe_enabled": not args.disable_clahe,
             "preprocess_ensemble": bool(args.preprocess_ensemble),
             "tta_mode": str(args.tta_mode).lower(),
-            "border_cropping": 0.10,
+            "border_cropping": 0.05,
             "target_size": [512, 512],
             "normalization": "[-1, 1] for ResNet50"
         },
