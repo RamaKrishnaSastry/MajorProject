@@ -280,11 +280,6 @@ def _augment_image(image: tf.Tensor) -> tf.Tensor:
     x = tf.image.adjust_gamma(x, gamma=gamma)
     x = tf.clip_by_value(x, 0.0, 1.0)
 
-    # Compression artifact simulation (common in heterogeneous datasets).
-    jpeg_in = tf.cast(tf.round(x * 255.0), tf.uint8)
-    jpeg_aug = tf.image.random_jpeg_quality(jpeg_in, min_jpeg_quality=70, max_jpeg_quality=100)
-    x = tf.cast(jpeg_aug, tf.float32) / 255.0
-
     # Mild sensor noise improves robustness to low-quality captures.
     noise_std = tf.random.uniform([], minval=0.0, maxval=0.03)
     noise = tf.random.normal(tf.shape(x), mean=0.0, stddev=noise_std)
@@ -341,6 +336,9 @@ def _build_tf_dataset(
         load_and_format,
         num_parallel_calls=tf.data.AUTOTUNE,
     )
+
+    if cache:
+        ds = ds.cache()
     
     if augment:
         # Augment only the image, not the labels
@@ -348,10 +346,7 @@ def _build_tf_dataset(
             lambda image, targets: (_augment_image(image), targets),
             num_parallel_calls=tf.data.AUTOTUNE,
         )
-    
-    if cache:
-        ds = ds.cache()
-    
+
     ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     return ds
 

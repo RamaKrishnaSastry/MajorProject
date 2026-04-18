@@ -71,14 +71,15 @@ DEFAULT_PIPELINE_CONFIG = {
     "batch_size": 4,
     "val_split": 0.2,
     "augment_train": True,
+    "cache": True,
     "dme_class_weight_clip_ratio": 7.0,
     "oversample_minority_enabled": False,
     "oversample_minority_class_id": 1,
     "oversample_factor": 1,
     # Stage 1: Initial training
     "stage1": {
-        "epochs": 40,
-        "learning_rate": 3e-5,
+        "epochs": 50,
+        "learning_rate": 1e-4,
         "early_stopping_patience": 15,
         "lr_reduce_patience": 8,
         "lr_reduce_factor": 0.5,
@@ -90,12 +91,12 @@ DEFAULT_PIPELINE_CONFIG = {
         "dr_loss_weight": 0.2,
         "dr_class_weighting": True,
         "dr_class_weight_clip_ratio": 6.0,
-        "warmup_epochs": 5,
+        "warmup_epochs": 3,
     },
     # Stage 2: Fine-tuning (after stage 1)
     "stage2": {
-        "epochs": 35,
-        "learning_rate": 5e-7,
+        "epochs": 30,
+        "learning_rate": 5e-6,
         "early_stopping_patience": 10,
         "lr_reduce_patience": 4,
         "lr_reduce_factor": 0.3,
@@ -107,7 +108,7 @@ DEFAULT_PIPELINE_CONFIG = {
         "dr_loss_weight": 0.05,
         "dr_class_weighting": True,
         "dr_class_weight_clip_ratio": 6.0,
-        "warmup_epochs": 5,
+        "warmup_epochs": 3,
         "stage2_freeze_aspp_bn": True,
         "stage2_checkpoint_use_stage1_baseline": True,
         "collapse_guard_enabled": True,
@@ -138,7 +139,7 @@ DEFAULT_PIPELINE_CONFIG = {
         ],
         "fallback_step": 0.02,
         "min_threshold": 0.60,
-        "dme_floor": 0.70,
+        "dme_floor": 0.40,
     },
 }
 

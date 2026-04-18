@@ -24,6 +24,7 @@ checkpoint_dir: pipeline_outputs/checkpoints
 batch_size: 8
 val_split: 0.20
 augment_train: true
+cache: true
 use_advanced_loader: true # Use QWK-aware stratified loader
 dme_class_weight_clip_ratio: 7.0 # stricter cap to avoid mild-class overweight instability
 oversample_minority_enabled: true # one-metric push mode: improve mild-class recall and DME boundary learning
@@ -49,8 +50,8 @@ grid_size: 8
 # STAGE 1: INITIAL TRAINING
 # ============================================================
 stage1:
-  epochs: 40
-  learning_rate: 2.0e-5 # slightly lower for smoother joint optimisation
+  epochs: 50
+  learning_rate: 1.0e-4 # frozen backbone means ASPP + heads need a real learning signal
   early_stopping_patience: 15
   lr_reduce_patience: 8
   lr_reduce_factor: 0.5
@@ -62,14 +63,14 @@ stage1:
   dr_loss_weight: 0.32
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.5
-  warmup_epochs: 5
+  warmup_epochs: 3
 
 # ============================================================
 # STAGE 2: FINE-TUNING
 # ============================================================
 stage2:
-  epochs: 50
-  learning_rate: 2.0e-7 # safer fine-tuning when starting from strong stage1 checkpoint
+  epochs: 30
+  learning_rate: 5.0e-6 # small but meaningful updates once the backbone is unfrozen
   early_stopping_patience: 30 # allow longer recovery windows before stopping stage2
   lr_reduce_patience: 8
   lr_reduce_factor: 0.5 # avoid collapsing LR too fast; helps DME continue improving late-stage
@@ -133,7 +134,7 @@ joint_selection:
     - [0.68, 0.70]
   fallback_step: 0.02
   min_threshold: 0.60
-  dme_floor: 0.70
+  dme_floor: 0.40
 
 # ============================================================
 # EVALUATION

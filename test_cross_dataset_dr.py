@@ -413,6 +413,35 @@ def build_best_matching_model(weights_path: str):
     )
 
 
+def resolve_model_artifact(preferred_path: str) -> Tuple[Optional[Path], str]:
+    """Resolve the best available model artifact from pipeline outputs.
+
+    Preference order:
+    1. Explicit user path, if it exists
+    2. Final exported full model
+    3. Final selected weights
+    4. Best-QWK weights
+    5. Best-joint model or weights
+    """
+    preferred = Path(preferred_path)
+    candidates = [
+        preferred,
+        Path("pipeline_outputs/model_final_best.model.h5"),
+        Path("pipeline_outputs/model_final_best.weights.h5"),
+        Path("pipeline_outputs/best_qwk.weights.h5"),
+        Path("pipeline_outputs/best_joint.model.h5"),
+        Path("pipeline_outputs/best_joint.weights.h5"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            suffix = "".join(candidate.suffixes)
+            if suffix.endswith(".model.h5"):
+                return candidate, "model"
+            if suffix.endswith(".weights.h5"):
+                return candidate, "weights"
+    return None, "missing"
+
+
 # ---------------------------------------------------------------------------
 # Dataset Loaders
 # ---------------------------------------------------------------------------
@@ -1029,8 +1058,8 @@ def main():
     parser.add_argument(
         "--use-weights",
         type=str,
-        default="pipeline_outputs/best_qwk.weights.h5",
-        help="Path to pre-trained weights file"
+        default="pipeline_outputs/model_final_best.model.h5",
+        help="Path to a pre-trained model or weights artifact"
     )
     parser.add_argument(
         "--idrid-images",
@@ -1124,12 +1153,19 @@ def main():
     dr_prediction_mode = "classification"
     model_variant = "current-multitask"
 
-    if args.use_model and Path(args.use_weights).exists():
-        logger.info("Building model for checkpoint compatibility...")
-        logger.info(f"Loading weights from {args.use_weights}...")
-        model, dr_prediction_mode, model_variant = build_best_matching_model(args.use_weights)
+    resolved_artifact, artifact_kind = resolve_model_artifact(args.use_weights)
+    if args.use_model and resolved_artifact is not None:
+        logger.info("Resolved evaluation artifact: %s", resolved_artifact)
+        if artifact_kind == "model":
+            logger.info("Loading full exported model for evaluation...")
+            model = keras.models.load_model(resolved_artifact)
+            model_variant = "resolved-full-model"
+        else:
+            logger.info("Building model for checkpoint compatibility...")
+            logger.info(f"Loading weights from {resolved_artifact}...")
+            model, dr_prediction_mode, model_variant = build_best_matching_model(str(resolved_artifact))
     elif args.use_model:
-        logger.warning(f"Weights file not found: {args.use_weights}")
+        logger.warning(f"No model artifact found for: {args.use_weights}")
         logger.warning("Using ImageNet pre-trained backbone with current architecture")
         model = build_model(
             input_shape=(512, 512, 3),
