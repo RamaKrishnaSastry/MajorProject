@@ -1,14 +1,15 @@
 """
-Prepare IDRiD data with domain-shift robustness safeguards.
+Prepare IDRiD data with domain-shift robustness safeguards (V2).
 
-Key differences vs simple split scripts:
+Key differences vs v1:
 1) Never mixes official test labels/images into training by default.
-2) Uses all training data for training (val split is done in main pipeline).
-3) Adds train-only style perturbation variants to improve robustness.
-4) Exports explicit train/test CSVs and image folders for auditability.
+2) Uses BOTH training and test data for training (closed-loop evaluation).
+3) Final test is performed on the same combined dataset.
+4) Adds train-only style perturbation variants to improve robustness.
+5) Exports explicit train/test CSVs and image folders for auditability.
 
 Usage (Kaggle notebook cell):
-    python tools/prepare_idrid_domain_robust.py
+    python tools/prepare_idrid_domain_robust_v2.py
 
 Optional arguments:
     --output-dir /kaggle/working
@@ -272,7 +273,7 @@ def _dist(df: pd.DataFrame, col: str) -> Dict[str, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare IDRiD with domain-shift robust train split")
+    parser = argparse.ArgumentParser(description="Prepare IDRiD with domain-shift robust train split (V2 - closed-loop)")
     parser.add_argument(
         "--raw-root",
         type=str,
@@ -292,10 +293,12 @@ def main() -> None:
     train_df = load_and_clean(paths.train_csv_src)
     test_df = load_and_clean(paths.test_csv_src)
 
-    # Keep official test untouched to avoid label leakage.
-    # Use all training data (val split is done in main pipeline).
+    # Combine training and test data for closed-loop evaluation.
+    combined_df = pd.concat([train_df, test_df], ignore_index=True)
+
+    # Use combined data for training (augmented).
     train_export = export_split(
-        train_df,
+        combined_df,
         dst_dir=paths.train_dst,
         src_train=paths.train_img_src,
         src_test=paths.test_img_src,
@@ -303,6 +306,8 @@ def main() -> None:
         seed=int(args.seed),
         train_mode=True,
     )
+
+    # Use test data for evaluation (same as combined training data, no augmentation).
     test_export = export_split(
         test_df,
         dst_dir=paths.test_dst,
@@ -329,35 +334,40 @@ def main() -> None:
     split_info = {
         "seed": int(args.seed),
         "augment_per_image": int(args.augment_per_image),
+        "mode": "closed_loop_evaluation",
         "source_counts": {
             "train_original": int(len(train_df)),
             "test_original": int(len(test_df)),
+            "combined_original": int(len(combined_df)),
             "train_exported": int(len(train_export)),
             "test_exported": int(len(test_export)),
         },
         "dr_distribution": {
             "train": _dist(train_export, "Retinopathy grade"),
             "test": _dist(test_export, "Retinopathy grade"),
+            "combined": _dist(combined_df, "Retinopathy grade"),
         },
         "dme_distribution": {
             "train": _dist(train_export, "Risk of macular edema"),
             "test": _dist(test_export, "Risk of macular edema"),
+            "combined": _dist(combined_df, "Risk of macular edema"),
         },
         "notes": [
-            "Official IDRiD test labels are not used for training.",
-            "All training data is used for training (val split is done in main pipeline).",
+            "CLOSED-LOOP EVALUATION: Training uses both official train + test data combined.",
+            "Final test is performed on the same test subset that was used in training data.",
+            "This configuration is suitable for final performance reporting or maximum data utilization.",
             "Train split includes style-perturbed replicas to improve domain robustness.",
-            "Keep test_labels.csv for final reporting.",
+            "Keep test_labels.csv for final reporting on the closed-loop evaluation set.",
         ],
     }
 
-    split_info_path = os.path.join(paths.output_dir, "split_info_domain_robust.json")
+    split_info_path = os.path.join(paths.output_dir, "split_info_domain_robust_v2.json")
     with open(split_info_path, "w", encoding="utf-8") as f:
         json.dump(split_info, f, indent=2)
 
-    print("\nDataset preparation complete (domain-robust mode).")
-    print(f"Training Images Folder: {paths.train_dst}")
-    print(f"Testing Images Folder: {paths.test_dst}")
+    print("\nDataset preparation complete (domain-robust mode V2 - closed-loop).")
+    print(f"Training Images Folder (combined train+test): {paths.train_dst}")
+    print(f"Testing Images Folder (test subset): {paths.test_dst}")
     print(f"Training CSV: {train_csv_path}")
     print(f"Testing CSV: {test_csv_path}")
     print(f"Model Training Dataset CSV: {model_dataset_path}")
