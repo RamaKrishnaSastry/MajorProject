@@ -76,6 +76,12 @@ DEFAULT_PIPELINE_CONFIG = {
     "oversample_minority_enabled": False,
     "oversample_minority_class_id": 1,
     "oversample_factor": 1,
+    "border_fraction": 0.05,
+    "ben_graham_enabled": True,
+    "ben_graham_sigma": 30.0,
+    "clahe_enabled": True,
+    "clip_limit": 2.0,
+    "grid_size": 8,
     # Stage 1: Initial training
     "stage1": {
         "epochs": 50,
@@ -240,7 +246,14 @@ def stage_data_preparation(
             batch_size=config["batch_size"],
             val_split=config["val_split"],
             augment_train=config["augment_train"],
+            cache=config["cache"],
             seed=config["seed"],
+            border_fraction=float(config.get("border_fraction", 0.05)),
+            apply_ben_graham=bool(config.get("ben_graham_enabled", True)),
+            ben_graham_sigma=float(config.get("ben_graham_sigma", 30.0)),
+            apply_clahe_enhancement=bool(config.get("clahe_enabled", True)),
+            clip_limit=float(config.get("clip_limit", 2.0)),
+            grid_size=int(config.get("grid_size", 8)),
             medical_importance=config.get("medical_importance", True),
             ordinal_penalty=config.get("ordinal_penalty", True),
             dme_class_weight_clip_ratio=config.get("dme_class_weight_clip_ratio", 7.0),
@@ -258,7 +271,14 @@ def stage_data_preparation(
             batch_size=config["batch_size"],
             val_split=config["val_split"],
             augment_train=config["augment_train"],
+            cache=config["cache"],
             seed=config["seed"],
+            border_fraction=float(config.get("border_fraction", 0.05)),
+            apply_ben_graham=bool(config.get("ben_graham_enabled", True)),
+            ben_graham_sigma=float(config.get("ben_graham_sigma", 30.0)),
+            apply_clahe_enhancement=bool(config.get("clahe_enabled", True)),
+            clip_limit=float(config.get("clip_limit", 2.0)),
+            grid_size=int(config.get("grid_size", 8)),
         )
 
         print(f"Class weights: {class_weights}")

@@ -32,6 +32,7 @@ from tensorflow import keras
 from tensorflow.keras import layers
 
 # Local imports
+from preprocess import load_and_preprocess
 from qwk_metrics import compute_quadratic_weighted_kappa
 
 logger = logging.getLogger(__name__)
@@ -426,13 +427,28 @@ def resolve_model_artifact(preferred_path: str) -> Tuple[Optional[Path], str]:
     preferred = Path(preferred_path)
     candidates = [
         preferred,
+        Path(str(preferred).replace(".model.h5", ".weights.h5")),
+        Path(str(preferred).replace(".weights.h5", ".model.h5")),
         Path("pipeline_outputs/model_final_best.model.h5"),
         Path("pipeline_outputs/model_final_best.weights.h5"),
+        Path("pipeline_outputs/model_stage2.model.h5"),
+        Path("pipeline_outputs/model_stage2.weights.h5"),
+        Path("pipeline_outputs/model_stage1.model.h5"),
+        Path("pipeline_outputs/model_stage1.weights.h5"),
         Path("pipeline_outputs/best_qwk.weights.h5"),
         Path("pipeline_outputs/best_joint.model.h5"),
         Path("pipeline_outputs/best_joint.weights.h5"),
+        Path("pipeline_outputs/checkpoints/stage2/best_joint.weights.h5"),
+        Path("pipeline_outputs/checkpoints/stage2/best_qwk.weights.h5"),
+        Path("pipeline_outputs/checkpoints/stage1/best_joint.weights.h5"),
+        Path("pipeline_outputs/checkpoints/stage1/best_qwk.weights.h5"),
     ]
+    seen = set()
     for candidate in candidates:
+        candidate_key = str(candidate)
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
         if candidate.exists():
             suffix = "".join(candidate.suffixes)
             if suffix.endswith(".model.h5"):
@@ -775,6 +791,8 @@ def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, grid_size: int = 8) 
 def preprocess_image(
     image_path: str, 
     target_size: Tuple[int, int] = (512, 512),
+    apply_ben_graham: bool = True,
+    ben_graham_sigma: float = 30.0,
     apply_clahe_enhancement: bool = True,
     border_fraction: float = 0.05,
 ) -> np.ndarray:
@@ -784,9 +802,10 @@ def preprocess_image(
     Steps:
     1. Load image
     2. Crop black borders
-    3. Apply CLAHE enhancement (optional)
-    4. Resize to target size
-    5. Normalize to [-1, 1] for ResNet50
+    3. Apply Ben Graham normalization (optional)
+    4. Apply CLAHE enhancement (optional)
+    5. Resize to target size
+    6. Normalize to [-1, 1] for ResNet50
     
     Parameters
     ----------
@@ -794,10 +813,14 @@ def preprocess_image(
         Path to image file
     target_size : Tuple[int, int]
         Target size (H, W)
+    apply_ben_graham : bool
+        Whether to apply Ben Graham normalization (default True)
+    ben_graham_sigma : float
+        Gaussian sigma for Ben Graham normalization
     apply_clahe_enhancement : bool
         Whether to apply CLAHE (default True)
     border_fraction : float
-        Fraction of borders to crop (default 0.10)
+        Fraction of borders to crop if content detection fails
         
     Returns
     -------
@@ -805,7 +828,16 @@ def preprocess_image(
         Preprocessed image normalized to [-1, 1]
     """
     try:
-        # 1. Load image
+        return load_and_preprocess(
+            str(image_path),
+            target_size=target_size,
+            border_fraction=border_fraction,
+            apply_ben_graham=apply_ben_graham,
+            ben_graham_sigma=ben_graham_sigma,
+            apply_clahe_enhancement=apply_clahe_enhancement,
+            clip_limit=2.0,
+            grid_size=8,
+        )
         image = cv2.imread(str(image_path))
         if image is None:
             # Try loading with TensorFlow for other formats
@@ -1189,6 +1221,8 @@ def main():
             "dr_prediction_mode": dr_prediction_mode,
         },
         "preprocessing": {
+            "ben_graham_enabled": True,
+            "ben_graham_sigma": 30.0,
             "clahe_enabled": not args.disable_clahe,
             "preprocess_ensemble": bool(args.preprocess_ensemble),
             "tta_mode": str(args.tta_mode).lower(),

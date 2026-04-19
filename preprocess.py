@@ -3,6 +3,7 @@ preprocess.py - Medical image preprocessing for fundus images.
 
 Implements:
 - Content-aware border cropping
+- Ben Graham local color normalization
 - CLAHE on luminance only
 - Resizing to model input size
 - Normalization to [-1, 1]
@@ -48,6 +49,14 @@ def crop_black_borders(image: np.ndarray, border_fraction: float = 0.05) -> np.n
     return image[crop_h : h - crop_h, crop_w : w - crop_w]
 
 
+def ben_graham_normalize(image: np.ndarray, sigma: float = 30.0) -> np.ndarray:
+    """Apply Ben Graham fundus normalization to suppress local illumination bias."""
+    image_f32 = image.astype(np.float32)
+    blurred = cv2.GaussianBlur(image_f32, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    normalized = cv2.addWeighted(image_f32, 4.0, blurred, -4.0, 128.0)
+    return np.clip(normalized, 0, 255).astype(np.uint8)
+
+
 def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, grid_size: int = 8) -> np.ndarray:
     """Apply CLAHE to luminance only to preserve color relationships."""
     lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
@@ -73,12 +82,18 @@ def preprocess_image(
     image: np.ndarray,
     target_size: tuple = (512, 512),
     border_fraction: float = 0.05,
+    apply_ben_graham: bool = True,
+    ben_graham_sigma: float = 30.0,
+    apply_clahe_enhancement: bool = True,
     clip_limit: float = 2.0,
     grid_size: int = 8,
 ) -> np.ndarray:
     """Full preprocessing pipeline for a single fundus image."""
     image = crop_black_borders(image, border_fraction)
-    image = apply_clahe(image, clip_limit, grid_size)
+    if apply_ben_graham:
+        image = ben_graham_normalize(image, sigma=ben_graham_sigma)
+    if apply_clahe_enhancement:
+        image = apply_clahe(image, clip_limit, grid_size)
     image = resize_image(image, target_size)
     image = normalize_image(image)
     return image
@@ -88,6 +103,9 @@ def load_and_preprocess(
     image_path: str,
     target_size: tuple = (512, 512),
     border_fraction: float = 0.05,
+    apply_ben_graham: bool = True,
+    ben_graham_sigma: float = 30.0,
+    apply_clahe_enhancement: bool = True,
     clip_limit: float = 2.0,
     grid_size: int = 8,
 ) -> np.ndarray:
@@ -96,7 +114,16 @@ def load_and_preprocess(
     if image is None:
         raise FileNotFoundError(f"Could not read image: {image_path}")
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    return preprocess_image(image, target_size, border_fraction, clip_limit, grid_size)
+    return preprocess_image(
+        image,
+        target_size=target_size,
+        border_fraction=border_fraction,
+        apply_ben_graham=apply_ben_graham,
+        ben_graham_sigma=ben_graham_sigma,
+        apply_clahe_enhancement=apply_clahe_enhancement,
+        clip_limit=clip_limit,
+        grid_size=grid_size,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +134,9 @@ def _preprocess_tf_wrapper(
     image_path: tf.Tensor,
     target_size: tuple,
     border_fraction: float,
+    apply_ben_graham: bool,
+    ben_graham_sigma: float,
+    apply_clahe_enhancement: bool,
     clip_limit: float,
     grid_size: int,
 ) -> tf.Tensor:
@@ -117,6 +147,9 @@ def _preprocess_tf_wrapper(
             path.numpy().decode("utf-8"),
             target_size=target_size,
             border_fraction=border_fraction,
+            apply_ben_graham=apply_ben_graham,
+            ben_graham_sigma=ben_graham_sigma,
+            apply_clahe_enhancement=apply_clahe_enhancement,
             clip_limit=clip_limit,
             grid_size=grid_size,
         )
@@ -130,6 +163,9 @@ def _preprocess_tf_wrapper(
 def make_preprocess_fn(
     target_size: tuple = (512, 512),
     border_fraction: float = 0.05,
+    apply_ben_graham: bool = True,
+    ben_graham_sigma: float = 30.0,
+    apply_clahe_enhancement: bool = True,
     clip_limit: float = 2.0,
     grid_size: int = 8,
 ):
@@ -137,7 +173,14 @@ def make_preprocess_fn(
 
     def preprocess_fn(image_path: tf.Tensor) -> tf.Tensor:
         return _preprocess_tf_wrapper(
-            image_path, target_size, border_fraction, clip_limit, grid_size
+            image_path,
+            target_size,
+            border_fraction,
+            apply_ben_graham,
+            ben_graham_sigma,
+            apply_clahe_enhancement,
+            clip_limit,
+            grid_size,
         )
 
     return preprocess_fn

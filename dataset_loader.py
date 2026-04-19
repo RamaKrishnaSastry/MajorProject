@@ -361,6 +361,9 @@ def build_datasets(
     cache: bool = False,
     seed: int = 42,
     border_fraction: float = 0.05,
+    apply_ben_graham: bool = True,
+    ben_graham_sigma: float = 30.0,
+    apply_clahe_enhancement: bool = True,
     clip_limit: float = 2.0,
     grid_size: int = 8,
 ) -> Tuple[tf.data.Dataset, tf.data.Dataset, Dict[int, float]]:
@@ -385,7 +388,13 @@ def build_datasets(
     seed : int
         Random seed for reproducible splits.
     border_fraction : float
-        CLAHE / crop preprocessing parameter.
+        Border crop fallback fraction.
+    apply_ben_graham : bool
+        Whether to apply Ben Graham local color normalization.
+    ben_graham_sigma : float
+        Gaussian sigma for Ben Graham normalization.
+    apply_clahe_enhancement : bool
+        Whether to apply CLAHE after Ben Graham normalization.
     clip_limit : float
         CLAHE clip limit.
     grid_size : int
@@ -429,6 +438,9 @@ def build_datasets(
     preprocess_fn = make_preprocess_fn(
         target_size=target_size,
         border_fraction=border_fraction,
+        apply_ben_graham=apply_ben_graham,
+        ben_graham_sigma=ben_graham_sigma,
+        apply_clahe_enhancement=apply_clahe_enhancement,
         clip_limit=clip_limit,
         grid_size=grid_size,
     )
