@@ -22,7 +22,7 @@ checkpoint_dir: pipeline_outputs/checkpoints
 # DATA LOADING
 # ============================================================
 batch_size: 8
-val_split: 0.20
+val_split: 0.0 # Use full validation set for accurate QWK; set >0.0 to hold out a fraction for validation during training
 augment_train: true
 cache: true
 use_advanced_loader: true # Use QWK-aware stratified loader
