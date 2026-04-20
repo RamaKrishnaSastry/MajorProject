@@ -206,7 +206,7 @@ def build_dr_head(
     x = layers.GlobalAveragePooling2D(name="dr_gap")(x)
     x = layers.LayerNormalization(name="dr_ln0")(x)
 
-    shortcut = layers.Dense(hidden_units, use_bias=True, name="dr_res_proj")(x)
+    shortcut = layers.Dense(hidden_units, use_bias=False, name="dr_res_proj")(x)
     shortcut = layers.BatchNormalization(name="dr_res_proj_bn")(shortcut)
 
     h = layers.Dense(hidden_units, use_bias=False, name="dr_fc1")(x)
@@ -219,7 +219,7 @@ def build_dr_head(
     x = layers.Add(name="dr_residual_add")([shortcut, h])
     x = layers.Activation("swish", name="dr_residual_act")(x)
     x = layers.Dropout(dropout_rate, name="dr_dropout")(x)
-    x = layers.Dense(num_classes, use_bias=False, activation="softmax", name="dr_output")(x)
+    x = layers.Dense(num_classes, activation="softmax", name="dr_output")(x)
     return x
 
 
@@ -259,18 +259,18 @@ def build_dme_head(
         x = layers.LayerNormalization(name="dme_ln0")(x)
         shortcut = layers.Dense(hidden_units, use_bias=False, name="dme_res_proj")(x)
 
-        h = layers.Dense(hidden_units, use_bias=False, name="dme_fc1")(x)
+        h = layers.Dense(hidden_units, name="dme_fc1")(x)
         h = layers.Activation("swish", name="dme_fc1_act")(h)
         h = layers.Dropout(dropout_rate * 0.5, name="dme_fc1_dropout")(h)
-        h = layers.Dense(hidden_units, use_bias=False, name="dme_fc2")(h)
+        h = layers.Dense(hidden_units, name="dme_fc2")(h)
 
         x = layers.Add(name="dme_residual_add")([shortcut, h])
         x = layers.Activation("swish", name="dme_residual_act")(x)
         x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
     else:
-        x = layers.Dense(hidden_units, use_bias=False, activation="relu", name="dme_fc1")(x)
+        x = layers.Dense(hidden_units, activation="relu", name="dme_fc1")(x)
         x = layers.Dropout(dropout_rate, name="dme_dropout")(x)
-    x = layers.Dense(num_classes, use_bias=False, activation="softmax", name="dme_risk")(x)
+    x = layers.Dense(num_classes, activation="softmax", name="dme_risk")(x)
     return x
 
 
