@@ -82,12 +82,30 @@ def build_backbone(
             )
         else:
             raise
+    
+    # --- Apply Atrous Trick (RFA) to Stage 4 ---
+    # This keeps the resolution high (e.g., 40x40 for 320x320 input)
+    for layer in base.layers:
+        # Prevent downsampling in Stage 4
+        if 'conv4_block1_0_conv' in layer.name or 'conv4_block1_1_conv' in layer.name:
+            layer.strides = (1, 1)
+        
+        # Adjust dilation to keep receptive field consistent with pre-trained weights
+        if 'conv4_block' in layer.name and '_2_conv' in layer.name:
+            layer.dilation_rate = (2, 2)
+            layer.padding = 'same'
+
+    # Set trainability based on parameter
     base.trainable = trainable
-    # EyePACS pretraining used the Block-3 endpoint (conv4_block6_out)
+
+    # Extract the Stage 4 endpoint
     output = base.get_layer("conv4_block6_out").output
+    
+    # Re-wrap in a Model to ensure the graph recognizes the stride/dilation changes
     backbone = keras.Model(inputs=base.input, outputs=output, name="resnet50_conv4_backbone")
     backbone.trainable = trainable
 
+    # Load custom weights if provided
     if weights_path is not None:
         backbone.load_weights(weights_path, skip_mismatch=True)
         logger.info("✅ Loaded custom backbone weights from '%s'.", weights_path)
