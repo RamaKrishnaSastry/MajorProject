@@ -37,7 +37,7 @@ class ResizeToMatch(layers.Layer):
 # ---------------------------------------------------------------------------
 
 def build_backbone(
-    input_shape: Tuple[int, int, int] = (512, 512, 3),
+    input_shape: Tuple[int, int, int] = (None, None, 3),
     weights: str = "imagenet",
     trainable: bool = True,
     weights_path: Optional[str] = None,
@@ -107,7 +107,7 @@ def build_backbone(
 
     # Load custom weights if provided
     if weights_path is not None:
-        backbone.load_weights(weights_path, skip_mismatch=True)
+        backbone.load_weights(weights_path, by_name=True, skip_mismatch=True)
         logger.info("✅ Loaded custom backbone weights from '%s'.", weights_path)
 
     logger.info(
