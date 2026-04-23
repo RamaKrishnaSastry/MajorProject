@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+import h5py
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -31,13 +32,57 @@ class ResizeToMatch(layers.Layer):
     def get_config(self):
         return super().get_config()
 
+import h5py
+import numpy as np
 
+def load_weights_from_keras3_h5(backbone, weights_path):
+    """
+    Loads weights saved in Keras 3 format (layers/conv2d_N/vars/0)
+    into a backbone built with Keras 3 on TF2.
+    """
+    with h5py.File(weights_path, 'r') as f:
+        saved_layers = sorted(
+            [k for k in f['layers'].keys()],
+            key=lambda x: (x.split('_')[0], int(x.split('_')[-1]) if x.split('_')[-1].isdigit() else 0)
+        )
+        
+        # Collect only layers that have variables
+        saved_weight_layers = []
+        for layer_name in saved_layers:
+            vars_group = f[f'layers/{layer_name}/vars']
+            if len(vars_group) > 0:
+                weights = [vars_group[str(i)][()] for i in range(len(vars_group))]
+                saved_weight_layers.append((layer_name, weights))
+        
+        # Collect backbone layers that have weights
+        model_weight_layers = [(l.name, l) for l in backbone.layers if l.get_weights()]
+        
+        print(f"Saved weight layers : {len(saved_weight_layers)}")
+        print(f"Model weight layers : {len(model_weight_layers)}")
+        
+        if len(saved_weight_layers) != len(model_weight_layers):
+            print("⚠️ Count mismatch — printing first 5 of each for inspection:")
+            for s, m in zip(saved_weight_layers[:5], model_weight_layers[:5]):
+                print(f"  saved={s[0]}  model={m[0]}")
+            return False
+        
+        # Transfer weights sequentially
+        transferred = 0
+        for (saved_name, saved_weights), (model_name, layer) in zip(saved_weight_layers, model_weight_layers):
+            try:
+                layer.set_weights(saved_weights)
+                transferred += 1
+            except Exception as e:
+                print(f"  ⚠️ Skipped {model_name} (saved={saved_name}): {e}")
+        
+        print(f"✅ Transferred {transferred}/{len(model_weight_layers)} layers.")
+        return True
 # ---------------------------------------------------------------------------
 # Backbone
 # ---------------------------------------------------------------------------
 
 def build_backbone(
-    input_shape: Tuple[int, int, int] = (512, 512, 3),
+    input_shape: Tuple[int, int, int] = (None, None, 3),
     weights: str = "imagenet",
     trainable: bool = True,
     weights_path: Optional[str] = None,
@@ -82,21 +127,37 @@ def build_backbone(
             )
         else:
             raise
+    
+    # --- Apply Atrous Trick (RFA) to Stage 4 ---
+    # This keeps the resolution high (e.g., 40x40 for 320x320 input)
+    for layer in base.layers:
+        # Prevent downsampling in Stage 4
+        if 'conv4_block1_0_conv' in layer.name or 'conv4_block1_1_conv' in layer.name:
+            layer.strides = (1, 1)
+        
+        # Adjust dilation to keep receptive field consistent with pre-trained weights
+        if 'conv4_block' in layer.name and '_2_conv' in layer.name:
+            layer.dilation_rate = (2, 2)
+            layer.padding = 'same'
+
+    # Set trainability based on parameter
     base.trainable = trainable
-    # EyePACS pretraining used the Block-3 endpoint (conv4_block6_out)
+
+    # Extract the Stage 4 endpoint
     output = base.get_layer("conv4_block6_out").output
+    
+    # Re-wrap in a Model to ensure the graph recognizes the stride/dilation changes
     backbone = keras.Model(inputs=base.input, outputs=output, name="resnet50_conv4_backbone")
     backbone.trainable = trainable
 
+    # Load custom weights if provided
     if weights_path is not None:
-        backbone.load_weights(weights_path, skip_mismatch=True)
+        success = load_weights_from_keras3_h5(backbone, weights_path)
+    if not success:
+        logger.warning("❌ Weight transfer failed, backbone uses ImageNet/random init.")
+    else:
         logger.info("✅ Loaded custom backbone weights from '%s'.", weights_path)
-
-    logger.info(
-        "✅ Backbone: ResNet50@conv4_block6_out, trainable=%s, output shape=%s",
-        trainable,
-        backbone.output_shape,
-    )
+    
     return backbone
 
 
