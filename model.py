@@ -153,11 +153,11 @@ def build_backbone(
     # Load custom weights if provided
     if weights_path is not None:
         success = load_weights_from_keras3_h5(backbone, weights_path)
-    if not success:
-        logger.warning("❌ Weight transfer failed, backbone uses ImageNet/random init.")
-    else:
-        logger.info("✅ Loaded custom backbone weights from '%s'.", weights_path)
-    
+        if not success:
+            logger.warning("❌ Weight transfer failed, backbone uses ImageNet/random init.")
+        else:
+            logger.info("✅ Loaded custom backbone weights from '%s'.", weights_path)
+        
     return backbone
 
 
