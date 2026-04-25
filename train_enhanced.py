@@ -13,11 +13,29 @@ Extends the base train.py with:
 import json
 import logging
 import os
+import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# ---------------------------------------------------------------------------
+# Reproducibility: seeds MUST be set before TensorFlow is imported.
+# TF initialises its global RNG state at import time, so any tf.random.set_seed
+# call that comes after import only affects ops created after that point.
+# Reading PYTHONHASHSEED here lets main_pipeline.py control the seed via
+# os.environ before importing this module.
+# ---------------------------------------------------------------------------
+_GLOBAL_SEED: int = int(os.environ.get("PYTHONHASHSEED", 42))
+random.seed(_GLOBAL_SEED)
+
 import numpy as np
+np.random.seed(_GLOBAL_SEED)
+
+os.environ["PYTHONHASHSEED"]        = str(_GLOBAL_SEED)
+os.environ["TF_DETERMINISTIC_OPS"]  = "1"   # deterministic GPU kernels
+os.environ["TF_CUDNN_DETERMINISTIC"] = "1"  # deterministic cuDNN (may slow down GPU)
+
 import tensorflow as tf
+tf.random.set_seed(_GLOBAL_SEED)
 from tensorflow import keras
 
 from model import build_model, build_model_dme_tuning
@@ -740,6 +758,89 @@ class JointQWKModelCheckpoint(keras.callbacks.Callback):
 
 
 # ---------------------------------------------------------------------------
+# Joint checkpoint that saves the FULL MODEL (not weights-only).
+# Required so evaluate_on_best_joint_model() can call keras.models.load_model()
+# without needing to rebuild the architecture first.
+# JointQWKModelCheckpoint still runs as the inner checkpoint so the
+# weights-only .h5 file is also kept for fast restores.
+# ---------------------------------------------------------------------------
+
+class JointQWKFullModelCheckpoint(keras.callbacks.Callback):
+    """Wraps JointQWKModelCheckpoint and additionally saves the full model.
+
+    The weights-only checkpoint (``weights_filepath``) is saved by the inner
+    ``JointQWKModelCheckpoint`` every time the joint score improves.  This
+    wrapper detects when that happens and additionally persists the full
+    SavedModel / .keras file so that ``evaluate_on_best_joint_model`` can
+    call ``keras.models.load_model()`` directly.
+
+    Parameters
+    ----------
+    weights_filepath : str
+        Passed through to ``JointQWKModelCheckpoint``.
+    full_model_filepath : str
+        Path to save the complete model (architecture + weights).
+        Should end in ``.keras`` or ``.h5``.
+    thresholds : list of (float, float)
+        Passed through to ``JointQWKModelCheckpoint``.
+    dme_floor : float
+        Passed through to ``JointQWKModelCheckpoint``.
+    verbose : int
+        Verbosity level.
+    """
+
+    def __init__(
+        self,
+        weights_filepath: str,
+        full_model_filepath: str,
+        thresholds: List[Tuple[float, float]],
+        dme_floor: float = 0.0,
+        verbose: int = 1,
+    ):
+        super().__init__()
+        self._inner = JointQWKModelCheckpoint(
+            filepath=weights_filepath,
+            thresholds=thresholds,
+            dme_floor=dme_floor,
+            verbose=verbose,
+        )
+        self.full_model_filepath = full_model_filepath
+        self.verbose = verbose
+        self._prev_best_harmonic: float = -float("inf")
+
+    def set_model(self, model):
+        super().set_model(model)
+        self._inner.set_model(model)
+
+    def on_epoch_end(self, epoch: int, logs=None):
+        self._inner.on_epoch_end(epoch, logs)
+
+        # Detect whether the inner checkpoint saved this epoch by checking
+        # whether its best harmonic score improved.
+        current_best = self._inner.best
+        if current_best is None:
+            return
+        current_harmonic = float(current_best.get("harmonic", -float("inf")))
+        if current_harmonic > self._prev_best_harmonic:
+            self._prev_best_harmonic = current_harmonic
+            try:
+                self.model.save(self.full_model_filepath)
+                if self.verbose:
+                    logger.info(
+                        "JointQWKFullModelCheckpoint: full model saved to '%s' "
+                        "(dme=%.4f, dr=%.4f, harmonic=%.4f).",
+                        self.full_model_filepath,
+                        float(current_best.get("dme_qwk", 0.0)),
+                        float(current_best.get("dr_qwk", 0.0)),
+                        current_harmonic,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "JointQWKFullModelCheckpoint: could not save full model: %s", exc
+                )
+
+
+# ---------------------------------------------------------------------------
 # QWK-based early stopping callback
 # ---------------------------------------------------------------------------
 
@@ -1278,18 +1379,27 @@ def build_enhanced_callbacks(
             min_threshold=float(config.get("joint_qwk_min_threshold", 0.60)),
         )
         dme_floor = float(config.get("joint_dme_floor", 0.70))
+        # Full-model path is derived from the weights path so callers can find it.
+        best_joint_full_path = best_joint_path.replace(".weights.h5", ".full_model.keras")
         callbacks.append(
-            JointQWKModelCheckpoint(
-                filepath=best_joint_path,
+            JointQWKFullModelCheckpoint(
+                weights_filepath=best_joint_path,
+                full_model_filepath=best_joint_full_path,
                 thresholds=joint_thresholds,
                 dme_floor=dme_floor,
                 verbose=1,
             )
         )
+        # Store path in config so train_enhanced() can pass it to post-stage eval.
+        config["_best_joint_full_model_path"] = best_joint_full_path
         logger.info(
             "JointQWKCheckpoint enabled with threshold ladder=%s and dme_floor=%.2f",
             [tuple(np.round(t, 3)) for t in joint_thresholds],
             dme_floor,
+        )
+        logger.info(
+            "JointQWKFullModelCheckpoint will save full model to '%s'.",
+            best_joint_full_path,
         )
 
     # Stage 2 safety guard: abort if QWK collapses far below stage1 baseline.
@@ -1675,6 +1785,50 @@ def train_enhanced(
     model_path = output_weights.replace(".weights.h5", ".model.h5")
     model.save(model_path)
     logger.info("✅ Saved full model (with architecture) to '%s'.", model_path)
+
+    # -----------------------------------------------------------------------
+    # Post-stage evaluation on the BEST JOINT checkpoint (not the last epoch).
+    # Uses JointQWKFullModelCheckpoint's saved full model so we report the
+    # model that actually had the best joint DME+DR score, not whatever the
+    # last epoch happened to produce.
+    # -----------------------------------------------------------------------
+    best_joint_full = cfg.get("_best_joint_full_model_path", None)
+    eval_model_path = best_joint_full if (best_joint_full and os.path.exists(best_joint_full)) else model_path
+    stage_label = "Stage 2" if pretrained_weights is not None else "Stage 1"
+
+    if eval_model_path and os.path.exists(eval_model_path):
+        eval_output_dir = os.path.join(cfg.get("output_dir", "."), f"eval_{stage_label.replace(' ', '_').lower()}")
+        os.makedirs(eval_output_dir, exist_ok=True)
+        try:
+            from evaluate_comprehensive import evaluate_on_best_joint_model
+            logger.info(
+                "Running post-stage evaluation on best joint model: '%s' -> '%s'",
+                eval_model_path, eval_output_dir,
+            )
+            eval_metrics = evaluate_on_best_joint_model(
+                checkpoint_path=eval_model_path,
+                dataset=val_ds,
+                output_dir=eval_output_dir,
+                stage_label=stage_label,
+                num_dme_classes=cfg.get("num_dme_classes", NUM_DME_CLASSES),
+                num_dr_classes=cfg.get("num_dr_classes", 5),
+                calibrate_dr_thresholds=bool(cfg.get("calibrate_dr_thresholds", True)),
+                calibrate_dme_thresholds=bool(cfg.get("calibrate_dme_thresholds", False)),
+            )
+            logger.info(
+                "Post-stage eval complete: DME QWK(raw)=%.4f  DR QWK(calib)=%.4f",
+                eval_metrics.get("qwk", float("nan")),
+                eval_metrics.get("dr_qwk_calib", float("nan")),
+            )
+            history.history["post_eval_dme_qwk"] = [eval_metrics.get("qwk", float("nan"))]
+            history.history["post_eval_dr_qwk_calib"] = [eval_metrics.get("dr_qwk_calib", float("nan"))]
+        except Exception as exc:
+            logger.warning("Post-stage evaluation failed (non-fatal): %s", exc)
+    else:
+        logger.warning(
+            "No best-joint full model found at '%s'; skipping post-stage evaluation.",
+            eval_model_path,
+        )
 
     return model, history.history
 
