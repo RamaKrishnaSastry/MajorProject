@@ -59,7 +59,7 @@ stage1:
   focal_loss_gamma: 1.5
   dme_label_smoothing: 0.02 # reduced smoothing to preserve class separation for QWK
   dme_soft_ordinal_weights: false # stage1 uses hard ordinal weighting for sharper boundaries
-  dr_loss_weight: 0.32
+  dr_loss_weight: 0.3
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.5
   warmup_epochs: 5
@@ -78,7 +78,7 @@ stage2:
   focal_loss_gamma: 1.5
   dme_label_smoothing: 0.005 # sharpen DME boundary further while keeping stage2 stable
   dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
-  dr_loss_weight: 0.13 # slightly lighter DR coupling to recover DME headroom near the 0.8 target
+  dr_loss_weight: 0.11 # slightly lighter DR coupling to recover DME headroom near the 0.8 target
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.0 # keep stronger minority-grade pressure for DR classwise stability
   warmup_epochs: 3 # shorter warmup to reduce prolonged low-LR drift in stage2
