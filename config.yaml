@@ -28,7 +28,7 @@ use_advanced_loader: true # Use QWK-aware stratified loader
 dme_class_weight_clip_ratio: 7.0 # stricter cap to avoid mild-class overweight instability
 oversample_minority_enabled: true # one-metric push mode: improve mild-class recall and DME boundary learning
 oversample_minority_class_id: 1 # 1=Mild DME
-oversample_factor: 2 # used only when oversample_minority_enabled=true
+oversample_factor: 3 # used only when oversample_minority_enabled=true
 max_batches:
   null # null = process entire validation set for accurate QWK
   # Set to a positive integer to limit batches (useful to
@@ -50,35 +50,35 @@ grid_size: 8
 # ============================================================
 stage1:
   epochs: 40
-  learning_rate: 2.0e-5 # slightly lower for smoother joint optimisation
-  early_stopping_patience: 15
-  lr_reduce_patience: 8
+  learning_rate: 1.0e-4 # slightly lower for smoother joint optimisation
+  early_stopping_patience: 20
+  lr_reduce_patience: 6
   lr_reduce_factor: 0.5
   min_lr: 1.0e-7
   ordinal_loss_weighting: true
-  focal_loss_gamma: 1.5
-  dme_label_smoothing: 0.02 # reduced smoothing to preserve class separation for QWK
-  dme_soft_ordinal_weights: false # stage1 uses hard ordinal weighting for sharper boundaries
-  dr_loss_weight: 0.32
+  focal_loss_gamma: 1.0
+  dme_label_smoothing: 0.01 # reduced smoothing to preserve class separation for QWK
+  dme_soft_ordinal_weights: true # stage1 uses hard ordinal weighting for sharper boundaries
+  dr_loss_weight: 0.15
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.5
-  warmup_epochs: 5
+  warmup_epochs: 8
 
 # ============================================================
 # STAGE 2: FINE-TUNING
 # ============================================================
 stage2:
   epochs: 50
-  learning_rate: 2.0e-7 # safer fine-tuning when starting from strong stage1 checkpoint
-  early_stopping_patience: 30 # allow longer recovery windows before stopping stage2
-  lr_reduce_patience: 8
-  lr_reduce_factor: 0.5 # avoid collapsing LR too fast; helps DME continue improving late-stage
-  min_lr: 1.0e-8 # keep LR from becoming effectively frozen in long stage2 runs
+  learning_rate: 5.0e-6 # safer fine-tuning when starting from strong stage1 checkpoint
+  early_stopping_patience: 40 # allow longer recovery windows before stopping stage2
+  lr_reduce_patience: 12
+  lr_reduce_factor: 0.3 # avoid collapsing LR too fast; helps DME continue improving late-stage
+  min_lr: 5.0e-9 # keep LR from becoming effectively frozen in long stage2 runs
   ordinal_loss_weighting: true
-  focal_loss_gamma: 1.5
-  dme_label_smoothing: 0.005 # sharpen DME boundary further while keeping stage2 stable
+  focal_loss_gamma: 1.0
+  dme_label_smoothing: 0.002 # sharpen DME boundary further while keeping stage2 stable
   dme_soft_ordinal_weights: true # keep soft ordinal weighting in stage2 fine-tuning
-  dr_loss_weight: 0.13 # slightly lighter DR coupling to recover DME headroom near the 0.8 target
+  dr_loss_weight: 0.07 # slightly lighter DR coupling to recover DME headroom near the 0.8 target
   dr_class_weighting: true
   dr_class_weight_clip_ratio: 7.0 # keep stronger minority-grade pressure for DR classwise stability
   warmup_epochs: 3 # shorter warmup to reduce prolonged low-LR drift in stage2
@@ -90,10 +90,10 @@ stage2:
   collapse_guard_ratio: 0.90
   collapse_guard_min_abs_qwk: 0.62
   collapse_guard_patience: 20 # allow longer recovery from temporary stage2 turbulence
-  collapse_guard_hard_drop: 0.65 # avoid aborting runs that can recover after transient dips
+  collapse_guard_hard_drop: 0.10 # avoid aborting runs that can recover after transient dips
   collapse_guard_start_epoch: 10 # activate guard later to ignore long warmup turbulence
   stage2_revert_if_worse: true
-  stage2_min_improvement: 0.001
+  stage2_min_improvement: 0.0
 
 # ============================================================
 # MODEL ARCHITECTURE
