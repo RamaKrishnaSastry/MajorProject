@@ -417,7 +417,7 @@ def build_datasets_advanced(
     save_split_info: bool = True,
     save_balance_plot: bool = True,
     messidor_dir: Optional[str] = None,
-) -> Tuple[tf.data.Dataset, tf.data.Dataset, Dict[int, float], Dict]:
+) -> Tuple[tf.data.Dataset, tf.data.Dataset, Dict[int, float], Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build QWK-aware train/val tf.data datasets.
 
     Parameters
@@ -467,7 +467,7 @@ def build_datasets_advanced(
     Returns
     -------
     tuple
-        ``(train_ds, val_ds, class_weights, split_info)``
+        ``(train_ds, val_ds, class_weights, split_info, train_paths, val_paths, train_dme, val_dme, train_dr, val_dr)``
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -583,7 +583,7 @@ def build_datasets_advanced(
             dme_labels, class_weights, output_path=balance_path,
         )
 
-    return train_ds, val_ds, class_weights, split_info
+    return train_ds, val_ds, class_weights, split_info, train_paths, val_paths, train_dme, val_dme, train_dr, val_dr
 
 
 # ---------------------------------------------------------------------------
@@ -631,7 +631,7 @@ def main():
             json.dump(fold_info, f, indent=2)
         print(json.dumps(fold_info, indent=2))
     else:
-        train_ds, val_ds, class_weights, split_info = build_datasets_advanced(
+        train_ds, val_ds, class_weights, split_info, train_paths, val_paths, train_dme, val_dme, train_dr, val_dr = build_datasets_advanced(
             csv_path=csv_path,
             image_dir=image_dir,
             batch_size=args.batch_size,
