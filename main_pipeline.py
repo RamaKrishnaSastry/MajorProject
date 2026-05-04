@@ -16,6 +16,7 @@ import random
 import time
 import glob
 import csv
+import shutil
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -201,10 +202,110 @@ def load_config(config_path: Optional[str] = None) -> Dict:
 # Pipeline stages
 # ---------------------------------------------------------------------------
 
+def save_split_images_and_csv(
+    save_path: str,
+    train_paths,
+    train_dme,
+    train_dr,
+    val_paths,
+    val_dme,
+    val_dr,
+) -> None:
+    """Save train/val split images and CSV files to specified directory.
+
+    Parameters
+    ----------
+    save_path : str
+        Base path where folders will be created.
+    train_paths : np.ndarray
+        Array of training image paths.
+    train_dme : np.ndarray
+        Array of training DME labels.
+    train_dr : np.ndarray
+        Array of training DR labels.
+    val_paths : np.ndarray
+        Array of validation image paths.
+    val_dme : np.ndarray
+        Array of validation DME labels.
+    val_dr : np.ndarray
+        Array of validation DR labels.
+    """
+    import pandas as pd
+    import numpy as np
+
+    os.makedirs(save_path, exist_ok=True)
+
+    # Create folder structure
+    train_images_dir = os.path.join(save_path, "train_images")
+    train_csv_dir = os.path.join(save_path, "train_csv")
+    val_images_dir = os.path.join(save_path, "val_images")
+    val_csv_dir = os.path.join(save_path, "val_csv")
+
+    os.makedirs(train_images_dir, exist_ok=True)
+    os.makedirs(train_csv_dir, exist_ok=True)
+    os.makedirs(val_images_dir, exist_ok=True)
+    os.makedirs(val_csv_dir, exist_ok=True)
+
+    logger.info("Saving split images and CSVs to '%s'.", save_path)
+
+    # Copy training images
+    logger.info("Copying %d training images...", len(train_paths))
+    train_image_names = []
+    for src_path in train_paths:
+        if os.path.exists(src_path):
+            filename = os.path.basename(src_path)
+            dst_path = os.path.join(train_images_dir, filename)
+            shutil.copy2(src_path, dst_path)
+            train_image_names.append(filename)
+        else:
+            logger.warning("Training image not found: '%s'", src_path)
+            train_image_names.append(os.path.basename(src_path))
+
+    # Copy validation images
+    logger.info("Copying %d validation images...", len(val_paths))
+    val_image_names = []
+    for src_path in val_paths:
+        if os.path.exists(src_path):
+            filename = os.path.basename(src_path)
+            dst_path = os.path.join(val_images_dir, filename)
+            shutil.copy2(src_path, dst_path)
+            val_image_names.append(filename)
+        else:
+            logger.warning("Validation image not found: '%s'", src_path)
+            val_image_names.append(os.path.basename(src_path))
+
+    # Create and save training CSV
+    train_df = pd.DataFrame({
+        "image_name": train_image_names,
+        "dme_label": train_dme,
+        "dr_label": train_dr,
+    })
+    train_csv_path = os.path.join(train_csv_dir, "train_split.csv")
+    train_df.to_csv(train_csv_path, index=False)
+    logger.info("Training CSV saved to '%s' with %d samples.", train_csv_path, len(train_df))
+
+    # Create and save validation CSV
+    val_df = pd.DataFrame({
+        "image_name": val_image_names,
+        "dme_label": val_dme,
+        "dr_label": val_dr,
+    })
+    val_csv_path = os.path.join(val_csv_dir, "val_split.csv")
+    val_df.to_csv(val_csv_path, index=False)
+    logger.info("Validation CSV saved to '%s' with %d samples.", val_csv_path, len(val_df))
+
+    logger.info("Split images and CSVs saved successfully.")
+
+
+# ---------------------------------------------------------------------------
+# Pipeline stages
+# ---------------------------------------------------------------------------
+
 def stage_data_preparation(
     csv_path: str,
     image_dir: str,
     config: Dict,
+    save_images_path: Optional[str] = None,
 ) -> tuple:
     """Stage 0: Load and prepare datasets.
 
@@ -216,6 +317,8 @@ def stage_data_preparation(
         Directory with fundus images.
     config : dict
         Pipeline configuration.
+    save_images_path : str, optional
+        Path to save train/val split images and CSV files.
 
     Returns
     -------
@@ -232,7 +335,7 @@ def stage_data_preparation(
 
     if config.get("use_advanced_loader", True):
         from dataset_loader_advanced import build_datasets_advanced
-        train_ds, val_ds, class_weights, split_info = build_datasets_advanced(
+        train_ds, val_ds, class_weights, split_info, train_paths, val_paths, train_dme, val_dme, train_dr, val_dr = build_datasets_advanced(
             csv_path=csv_path,
             image_dir=image_dir,
             target_size=target_size,
@@ -248,6 +351,18 @@ def stage_data_preparation(
             oversample_factor=int(config.get("oversample_factor", 1)),
             output_dir=config["output_dir"],
         )
+        
+        # Save split images and CSVs if path is provided
+        if save_images_path:
+            save_split_images_and_csv(
+                save_path=save_images_path,
+                train_paths=train_paths,
+                train_dme=train_dme,
+                train_dr=train_dr,
+                val_paths=val_paths,
+                val_dme=val_dme,
+                val_dr=val_dr,
+            )
     else:
         from dataset_loader import build_datasets, save_split_info
         train_ds, val_ds, class_weights = build_datasets(
@@ -856,6 +971,7 @@ def run_pipeline(
     two_stage: bool = True,
     eyepacs_backbone: Optional[str] = None,
     backbone_weights_path: Optional[str] = None,
+    save_images_path: Optional[str] = None,
 ) -> Dict:
     """Run the full multi-stage training and evaluation pipeline.
 
@@ -879,6 +995,9 @@ def run_pipeline(
         Path to a custom ``.h5`` backbone weights file for Stage 1.  Enables
         transfer learning from any pre-trained backbone (e.g. EyePACS,
         proprietary).  Ignored when ``eyepacs_backbone`` is set.
+    save_images_path : str, optional
+        Path to save train/val split images and CSV files. If provided, creates
+        folders for organizing the split data for external use.
 
     Returns
     -------
@@ -900,7 +1019,7 @@ def run_pipeline(
 
     # Data preparation
     train_ds, val_ds, class_weights, split_info = stage_data_preparation(
-        csv_path, image_dir, cfg
+        csv_path, image_dir, cfg, save_images_path=save_images_path
     )
 
     all_metrics = {}
@@ -1000,6 +1119,7 @@ def run_stage2_only(
     image_dir: str,
     config: Optional[Dict] = None,
     config_path: Optional[str] = None,
+    save_images_path: Optional[str] = None,
 ) -> Dict:
     """Run only Stage 2 fine-tuning using an existing Stage 1 checkpoint.
 
@@ -1019,7 +1139,7 @@ def run_stage2_only(
 
     t_total = time.time()
 
-    train_ds, val_ds, class_weights, _ = stage_data_preparation(csv_path, image_dir, cfg)
+    train_ds, val_ds, class_weights, _ = stage_data_preparation(csv_path, image_dir, cfg, save_images_path=save_images_path)
 
     stage1_dir = os.path.join(cfg["checkpoint_dir"], "stage1")
     stage1_joint_ckpt = os.path.join(stage1_dir, "best_joint.weights.h5")
@@ -1131,6 +1251,10 @@ def main():
                         help="Path to a custom backbone weights file (.h5) for Stage 1. "
                              "Enables transfer learning from any pre-trained backbone "
                              "(e.g. EyePACS, proprietary). Ignored when --use-eyepacs is set.")
+    parser.add_argument("--save-images-path", type=str, default=None,
+                        metavar="SAVE_PATH",
+                        help="Optional path to save train/val split images and CSV files. "
+                             "Creates folders: train_images, train_csv, val_images, val_csv.")
     args = parser.parse_args()
 
     if args.mock or args.csv is None:
@@ -1160,6 +1284,7 @@ def main():
             csv_path=csv_path,
             image_dir=image_dir,
             config=cfg,
+            save_images_path=args.save_images_path,
         )
     else:
         report = run_pipeline(
@@ -1169,6 +1294,7 @@ def main():
             two_stage=not args.single_stage,
             eyepacs_backbone=args.use_eyepacs,
             backbone_weights_path=args.backbone_weights_path,
+            save_images_path=args.save_images_path,
         )
 
     print("\nPipeline Report:")
